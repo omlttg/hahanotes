@@ -1,10 +1,15 @@
 import os
 import hashlib
 import httpx
+from pydub import AudioSegment
 
 # Default voice IDs from ElevenLabs
 DEFAULT_ROOKIE_VOICE_ID = "EXAVITQu4vr4xnSDxMaL"  # Bella (trẻ trung)
-DEFAULT_CYNIC_VOICE_ID = "N2lVS1w75z9C374a9uYx"   # Adam (trầm ấm)
+DEFAULT_CYNIC_VOICE_ID = "ErXwobaYiN019PkySvjV"   # Antoni (nam trầm ấm, mỉa mai, hoạt động 100%)
+
+# URLs cho assets nhạc nền và hiệu ứng
+BG_MUSIC_URL = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3"  # Nhạc nền nhẹ nhàng
+LAUGH_SFX_URL = "https://www.soundjay.com/human/sounds/laughter-3.mp3"          # Tiếng cười hiệu ứng
 
 def get_voice_id(speaker: str) -> str:
     """
@@ -125,14 +130,27 @@ async def generate_audio_file_async(text: str, speaker: str, voice_id: str = Non
         if response.status_code == 200:
             with open(file_path, "wb") as f:
                 f.write(response.content)
-            print(f"✓ [TTS Success] Đã sinh và lưu file cache: {filename}")
+            print(f"✓ [TTS Success] Đã sinh và lưu file cache từ ElevenLabs: {filename}")
             return filename
         else:
             print(f"✗ [TTS API Error] ElevenLabs API trả về mã lỗi {response.status_code}: {response.text}")
-            return ""
+            raise ValueError(f"ElevenLabs status {response.status_code}")
     except Exception as e:
-        print(f"✗ [TTS Exception] Lỗi kết nối ElevenLabs API: {str(e)}")
-        return ""
+        print(f"⚠️ [TTS Warning] Không sinh được giọng từ ElevenLabs ({str(e)}). Đang tự động chuyển sang gTTS làm fallback...")
+        try:
+            from gtts import gTTS
+            # Rookie -> English American (lang='en', tld='com')
+            # Cynic -> English British (lang='en', tld='co.uk')
+            tld = "com" if speaker.lower().strip() == "rookie" else "co.uk"
+            tts = gTTS(text=text, lang="en", tld=tld)
+            
+            # Lưu file audio bằng gTTS
+            tts.save(file_path)
+            print(f"✓ [TTS Fallback Success] Đã sinh và lưu file cache bằng gTTS: {filename}")
+            return filename
+        except Exception as fallback_err:
+            print(f"✗ [TTS Fallback Error] Thất bại hoàn toàn khi sinh gTTS: {fallback_err}")
+            return ""
 
 def generate_audio_file(text: str, speaker: str, voice_id: str = None) -> str:
     """
@@ -154,3 +172,227 @@ def generate_audio_file(text: str, speaker: str, voice_id: str = None) -> str:
         return loop.run_until_complete(generate_audio_file_async(text, speaker, voice_id))
     else:
         return loop.run_until_complete(generate_audio_file_async(text, speaker, voice_id))
+
+async def download_assets_if_missing():
+    """
+    Tải các file asset nhạc nền và tiếng cười nếu chưa tồn tại.
+    """
+    assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "assets")
+    os.makedirs(assets_dir, exist_ok=True)
+    
+    bg_music_path = os.path.join(assets_dir, "bg_music.mp3")
+    laugh_sfx_path = os.path.join(assets_dir, "laugh.mp3")
+    
+    async with httpx.AsyncClient() as client:
+        # Tải nhạc nền nếu thiếu
+        if not os.path.exists(bg_music_path):
+            try:
+                print(f"[Assets] Downloading background music from {BG_MUSIC_URL}...")
+                response = await client.get(BG_MUSIC_URL, timeout=30.0)
+                if response.status_code == 200:
+                    with open(bg_music_path, "wb") as f:
+                        f.write(response.content)
+                    print("✓ [Assets] Background music downloaded successfully.")
+                else:
+                    print(f"✗ [Assets] Failed to download background music: {response.status_code}")
+            except Exception as e:
+                print(f"✗ [Assets] Exception downloading background music: {e}")
+                
+        # Tải tiếng cười sfx nếu thiếu
+        if not os.path.exists(laugh_sfx_path):
+            try:
+                print(f"[Assets] Downloading laughter SFX from {LAUGH_SFX_URL}...")
+                response = await client.get(LAUGH_SFX_URL, timeout=15.0)
+                if response.status_code == 200:
+                    with open(laugh_sfx_path, "wb") as f:
+                        f.write(response.content)
+                    print("✓ [Assets] Laughter SFX downloaded successfully.")
+                else:
+                    print(f"✗ [Assets] Failed to download laughter SFX: {response.status_code}")
+            except Exception as e:
+                print(f"✗ [Assets] Exception downloading laughter SFX: {e}")
+
+async def merge_scenes_to_podcast(
+    scenes: list, 
+    podcast_id: str, 
+    enable_bgm: bool = True, 
+    enable_sfx: bool = True,
+    rookie_voice: str = None,
+    cynic_voice: str = None
+) -> str:
+    """
+    Ghép nối các câu thoại của scenes thành một file podcast mp3 duy nhất,
+    lồng nhạc nền và tiếng cười hiệu ứng, sau đó lưu cache.
+    Trả về tên file podcast (ví dụ: 'podcast_{id}.mp3').
+    """
+    cache_dir = get_cache_dir()
+    podcast_filename = f"podcast_{podcast_id}.mp3"
+    podcast_path = os.path.join(cache_dir, podcast_filename)
+    
+    # Nếu đã có file trong cache, trả về ngay
+    if os.path.exists(podcast_path):
+        print(f"[Podcast Cache Hit] Using existing podcast file: {podcast_filename}")
+        return podcast_filename
+        
+    print(f"[Podcast Gen] Starting merge for podcast: {podcast_id}")
+    
+    # 1. Thu thập các AudioSegment câu thoại
+    segments = []
+    assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "assets")
+    bg_music_path = os.path.join(assets_dir, "bg_music.mp3")
+    laugh_sfx_path = os.path.join(assets_dir, "laugh.mp3")
+    
+    # Đọc tiếng cười nếu có
+    laugh_sfx = None
+    if enable_sfx and os.path.exists(laugh_sfx_path):
+        try:
+            laugh_sfx = AudioSegment.from_mp3(laugh_sfx_path) - 12  # Giảm âm lượng tiếng cười một chút
+        except Exception as e:
+            print(f"[Podcast Gen] Lỗi đọc sfx tiếng cười: {e}")
+            
+    for idx, scene in enumerate(scenes):
+        speaker = scene.get("speaker", "cynic")
+        text = scene.get("text", "")
+        voice_id = scene.get("voice_id")
+        if not voice_id:
+            voice_id = rookie_voice if speaker == "rookie" else cynic_voice
+        if not voice_id:
+            voice_id = get_voice_id(speaker)
+            
+        hash_input = f"{voice_id}:{text}".encode('utf-8')
+        md5_hash = hashlib.md5(hash_input).hexdigest()
+        scene_file = os.path.join(cache_dir, f"{md5_hash}.mp3")
+        
+        if os.path.exists(scene_file):
+            try:
+                seg = AudioSegment.from_mp3(scene_file)
+                segments.append((speaker, seg))
+            except Exception as e:
+                print(f"[Podcast Gen] Lỗi đọc segment {md5_hash}: {e}")
+                # Fallback: Tạo một đoạn silent ngắn để ko bị mất sub
+                segments.append((speaker, AudioSegment.silent(duration=2000)))
+        else:
+            # Nếu chưa có file (lỗi ElevenLabs hoặc chạy local không key), tạo silent audio
+            print(f"[Podcast Gen Warning] Thiếu file audio cho: {text[:20]}...")
+            segments.append((speaker, AudioSegment.silent(duration=3000)))
+            
+    if not segments:
+        print("[Podcast Gen Error] Không có audio segment nào để ghép nối.")
+        return ""
+        
+    # 2. Ghép nối các segment
+    combined = AudioSegment.silent(duration=500)  # Bắt đầu bằng 500ms im lặng
+    
+    for idx, (speaker, seg) in enumerate(segments):
+        combined += seg
+        
+        # Thêm tiếng cười hiệu ứng ngẫu nhiên hoặc sau câu của cynic (ở giữa kịch bản)
+        if speaker == "cynic" and laugh_sfx and idx < len(segments) - 1:
+            # Chỉ chèn thỉnh thoảng (ví dụ: ở vị trí chẵn) để tránh lạm dụng tiếng cười
+            if idx % 2 == 1:
+                # Chèn khoảng lặng ngắn rồi cho tiếng cười
+                combined += AudioSegment.silent(duration=300)
+                # Lấy 1.5s đầu tiên của tiếng cười để tránh tiếng cười quá dài
+                laugh_segment = laugh_sfx[:1500]
+                combined += laugh_segment
+                combined += AudioSegment.silent(duration=400)
+                continue
+                
+        # Khoảng lặng thông thường giữa các câu thoại
+        combined += AudioSegment.silent(duration=800)
+        
+    # 3. Lồng nhạc nền (background music)
+    if enable_bgm and os.path.exists(bg_music_path):
+        try:
+            bg_music = AudioSegment.from_mp3(bg_music_path)
+            # Giảm âm lượng nhạc nền cho rất nhỏ (ví dụ -24dB)
+            bg_music = bg_music - 24
+            
+            # Cắt hoặc lặp nhạc nền cho khớp với độ dài podcast
+            podcast_duration = len(combined)
+            if len(bg_music) < podcast_duration:
+                # Lặp lại nhạc nền nếu ngắn hơn
+                loops = (podcast_duration // len(bg_music)) + 1
+                bg_music = bg_music * loops
+            bg_music = bg_music[:podcast_duration]
+            
+            # Fade out nhạc nền ở 1.5 giây cuối cùng
+            bg_music = bg_music.fade_out(1500)
+            
+            # Overlay nhạc nền vào cuộc đối thoại
+            combined = combined.overlay(bg_music)
+            print("✓ [Podcast Gen] Đã lồng nhạc nền thành công.")
+        except Exception as e:
+            print(f"[Podcast Gen Warning] Không lồng được nhạc nền: {e}")
+            
+    # 4. Xuất file
+    try:
+        combined.export(podcast_path, format="mp3", bitrate="128k")
+        print(f"✓ [Podcast Success] Đã tạo thành công podcast: {podcast_filename}")
+        return podcast_filename
+    except Exception as e:
+        print(f"✗ [Podcast Export Error] Lỗi ghi file podcast: {e}")
+        return ""
+
+def get_podcast_timings(
+    scenes: list, 
+    enable_bgm: bool = True, 
+    enable_sfx: bool = True,
+    rookie_voice: str = None,
+    cynic_voice: str = None
+) -> list[dict]:
+    """
+    Tính toán chính xác mốc thời gian (bắt đầu, kết thúc, thời lượng) của từng scene trong podcast đã ghép.
+    """
+    cache_dir = get_cache_dir()
+    timings = []
+    current_time_ms = 500  # Bắt đầu bằng 500ms im lặng
+    
+    # Đọc sfx tiếng cười
+    assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "assets")
+    laugh_sfx_path = os.path.join(assets_dir, "laugh.mp3")
+    laugh_sfx_exists = enable_sfx and os.path.exists(laugh_sfx_path)
+    
+    for idx, scene in enumerate(scenes):
+        speaker = scene.get("speaker", "cynic")
+        text = scene.get("text", "")
+        voice_id = scene.get("voice_id")
+        if not voice_id:
+            voice_id = rookie_voice if speaker == "rookie" else cynic_voice
+        if not voice_id:
+            voice_id = get_voice_id(speaker)
+            
+        hash_input = f"{voice_id}:{text}".encode('utf-8')
+        md5_hash = hashlib.md5(hash_input).hexdigest()
+        scene_file = os.path.join(cache_dir, f"{md5_hash}.mp3")
+        
+        duration_ms = 3000  # Fallback
+        if os.path.exists(scene_file):
+            try:
+                seg = AudioSegment.from_mp3(scene_file)
+                duration_ms = len(seg)
+            except Exception:
+                duration_ms = 3000
+                
+        start_sec = current_time_ms / 1000.0
+        end_sec = (current_time_ms + duration_ms) / 1000.0
+        timings.append({
+            "start": start_sec,
+            "end": end_sec,
+            "duration": duration_ms / 1000.0
+        })
+        
+        current_time_ms += duration_ms
+        
+        # Tiếng cười hiệu ứng ngẫu nhiên hoặc sau câu của cynic (ở giữa kịch bản)
+        if speaker == "cynic" and laugh_sfx_exists and idx < len(scenes) - 1:
+            if idx % 2 == 1:
+                current_time_ms += 300 + 1500 + 400
+                continue
+                
+        # Khoảng lặng thông thường giữa các câu thoại
+        current_time_ms += 800
+        
+    return timings
+
+

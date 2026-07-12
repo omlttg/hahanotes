@@ -18,3 +18,18 @@ export interface ChatMessage {
   audioUrl?: string;
   timestamp: Date;
 }
+
+export interface SessionMetadata {
+  id: string;
+  title: string;
+  category: string;
+  createdAt: string;
+}
+
+export interface HahaNotesConfig {
+  rookieVoice: string;
+  cynicVoice: string;
+  scenesCount: number;
+  enableBgm: boolean;
+  enableSfx: boolean;
+}
