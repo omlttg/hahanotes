@@ -1,0 +1,81 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript & build cache
+*.tsbuildinfo
+next-env.d.ts
+tsconfig.tsbuildinfo
+
+# python venv and cache
+/venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Block all sensitive credentials/keys json files in any directory
+*service-account.json
+*credentials*.json
+*secret*.json
+*key*.json
+*auth*.json
+*.json.key
+
+# SQLite database local files
+*.db
+*.db-journal
+*.sqlite
+/tmp/hahanotes_metadata.db
+
+# local audio and static caches
+api/static/audio/
+*.mp3
+
+# AI Agent logs & Local Knowledge Base
+.agent_conversations/
+global_brain
+/global_brain
+
+# IDE and Editor configs
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
