@@ -10,7 +10,7 @@ DEFAULT_CYNIC_VOICE_ID = "ErXwobaYiN019PkySvjV"   # Antoni (nam trầm ấm, m�
 
 # URLs cho assets nhạc nền và hiệu ứng
 BG_MUSIC_URL = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3"  # Nhạc nền nhẹ nhàng
-LAUGH_SFX_URL = "https://www.soundjay.com/human/sounds/laughter-3.mp3"          # Tiếng cười hiệu ứng
+LAUGH_SFX_URL = "https://raw.githubusercontent.com/jitsi/jitsi-meet/master/sounds/reactions-laughter.mp3"  # Tiếng cười hiệu ứng
 
 # Lock toàn cục để tránh xung đột ghi đè file cache đồng thời
 _audio_write_lock = asyncio.Lock()
