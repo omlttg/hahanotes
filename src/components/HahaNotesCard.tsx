@@ -30,11 +30,28 @@ export const HahaNotesCard: React.FC<HahaNotesCardProps> = ({
        : '')
     : '';
     
+  // Helper to serialize script scenes to URL safe Base64 for stateless Vercel backend
+  const serializeScript = (scenes: any[]) => {
+    try {
+      const data = scenes.map(s => ({ s: s.speaker === 'rookie' ? 'r' : 'c', t: s.text }));
+      const jsonStr = JSON.stringify(data);
+      return btoa(unescape(encodeURIComponent(jsonStr)))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+    } catch (e) {
+      console.error("Failed to serialize script", e);
+      return "";
+    }
+  };
+
   const queryParams = new URLSearchParams();
   if (rookieVoice) queryParams.set('rookieVoice', rookieVoice);
   if (cynicVoice) queryParams.set('cynicVoice', cynicVoice);
   queryParams.set('enableBgm', enableBgm ? 'true' : 'false');
   queryParams.set('enableSfx', enableSfx ? 'true' : 'false');
+  const scriptParam = serializeScript(script.scenes);
+  if (scriptParam) queryParams.set('script', scriptParam);
   
   const podcastUrl = `${API_BASE}/api/podcast/${script.conversation_id}.mp3?${queryParams.toString()}`;
 

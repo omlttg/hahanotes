@@ -274,8 +274,10 @@ async def api_generate_script(payload: GenerateRequest):
             # Lưu mapping vào DB SQLite tạm trên Vercel để ngăn chặn lạm dụng API ElevenLabs
             save_audio_mapping(md5_hash, text, speaker, voice_id)
             
-            # Trả về đường dẫn on-demand stream chỉ với MD5 (bảo mật, không lộ text qua query dài)
-            scene["audioUrl"] = f"/api/audio-stream/{md5_hash}"
+            # Trả về đường dẫn on-demand stream có kèm query parameters để hỗ trợ stateless Vercel backend
+            import urllib.parse
+            quoted_text = urllib.parse.quote(text)
+            scene["audioUrl"] = f"/api/audio-stream/{md5_hash}?text={quoted_text}&speaker={speaker}&voice_id={voice_id}"
             
         return {
             "success": True,
@@ -321,8 +323,10 @@ async def api_chat(payload: ChatRequest):
             # Lưu mapping an toàn
             save_audio_mapping(md5_hash, text, speaker, voice_id)
             
-            # Gán URL stream on-demand
-            item["audioUrl"] = f"/api/audio-stream/{md5_hash}"
+            # Gán URL stream on-demand kèm query parameters
+            import urllib.parse
+            quoted_text = urllib.parse.quote(text)
+            item["audioUrl"] = f"/api/audio-stream/{md5_hash}?text={quoted_text}&speaker={speaker}&voice_id={voice_id}"
             
         return {
             "success": True,
@@ -333,38 +337,69 @@ async def api_chat(payload: ChatRequest):
         raise HTTPException(status_code=500, detail=f"Lỗi khi tương tác với Agent: {str(e)}")
 
 @app.get("/api/audio-stream/{md5_hash}")
-async def api_audio_stream(md5_hash: str, request: Request):
+async def api_audio_stream(
+    md5_hash: str, 
+    request: Request,
+    text: str = None,
+    speaker: str = None,
+    voice_id: str = None
+):
     """
-    Endpoint tải hoặc sinh audio on-demand. Bảo mật tuyệt đối: chỉ cho phép tải nếu md5_hash
-    đã được định nghĩa trước bởi hệ thống trong DB mapping (ngăn chặn spam API ElevenLabs).
+    Endpoint tải hoặc sinh audio on-demand. Hỗ trợ stateless query parameters
+    hoặc fallback tra cứu SQLite DB tạm để tương thích ngược.
     """
-    # 1. Tìm trong SQLite DB xem MD5 này có hợp lệ không
-    mapping = get_audio_mapping(md5_hash)
-    if not mapping:
-        raise HTTPException(
-            status_code=403, 
-            detail="Truy cập bị từ chối. File audio chưa được đăng ký bởi hệ thống."
-        )
-        
-    text, speaker, voice_id = mapping
-    
-    # 2. Kiểm tra file mp3 trong thư mục cache
     cache_dir = get_cache_dir()
     file_path = os.path.join(cache_dir, f"{md5_hash}.mp3")
     
+    # 1. Kiểm tra file mp3 trong thư mục cache
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type="audio/mpeg")
         
-    # 3. Nếu chưa có file cache, sinh audio async sử dụng shared http client
-    client = request.app.state.http_client
-    filename = await generate_audio_file_async(text, speaker, voice_id, client=client)
-    
-    if filename and os.path.exists(file_path):
-        # Stream file nhị phân tiết kiệm RAM
-        return FileResponse(file_path, media_type="audio/mpeg")
+    # 2. Nếu có các query parameters đầy đủ, tiến hành sinh trực tiếp (không phụ thuộc DB)
+    if text and speaker:
+        if not voice_id:
+            voice_id = get_voice_id(speaker)
+        client = request.app.state.http_client
+        filename = await generate_audio_file_async(text, speaker, voice_id, client=client)
+        if filename and os.path.exists(file_path):
+            return FileResponse(file_path, media_type="audio/mpeg")
+            
+    # 3. Tìm trong SQLite DB xem MD5 này có hợp lệ không (dành cho các phiên bản cũ/fallback)
+    mapping = get_audio_mapping(md5_hash)
+    if mapping:
+        text_db, speaker_db, voice_id_db = mapping
+        client = request.app.state.http_client
+        filename = await generate_audio_file_async(text_db, speaker_db, voice_id_db, client=client)
+        if filename and os.path.exists(file_path):
+            return FileResponse(file_path, media_type="audio/mpeg")
         
     # Nếu ElevenLabs lỗi hoặc chưa cấu hình API Key, trả về 404
     raise HTTPException(status_code=404, detail="Audio file could not be generated.")
+
+def deserialize_script(script_b64: str) -> list[dict]:
+    """
+    Giải mã chuỗi Base64 URL-safe chứa danh sách scenes (s: speaker, t: text) từ frontend
+    để xử lý một cách stateless hoàn toàn trên Vercel.
+    """
+    import base64
+    import json
+    try:
+        # Bổ sung padding cần thiết cho base64 decode
+        padded = script_b64 + '=' * (4 - len(script_b64) % 4)
+        padded = padded.replace('-', '+').replace('_', '/')
+        decoded_bytes = base64.b64decode(padded)
+        json_str = decoded_bytes.decode('utf-8')
+        data = json.loads(json_str)
+        scenes = []
+        for item in data:
+            scenes.append({
+                "speaker": "rookie" if item["s"] == "r" else "cynic",
+                "text": item["t"]
+            })
+        return scenes
+    except Exception as e:
+        print(f"✗ [Stateless Script Deserialization Error] {e}")
+        return []
 
 @app.get("/api/podcast/{conversation_id}.mp3")
 async def api_get_podcast(
@@ -373,20 +408,26 @@ async def api_get_podcast(
     rookieVoice: str = None, 
     cynicVoice: str = None,
     enableBgm: bool = True,
-    enableSfx: bool = True
+    enableSfx: bool = True,
+    script: str = None
 ):
     """
     Endpoint tải hoặc sinh file podcast mp3 hoàn chỉnh.
-    Nó sẽ tự động kiểm tra xem các file âm thanh thành phần có đủ chưa.
-    Nếu thiếu, nó sẽ sinh nốt và ghép nối thành một file podcast duy nhất.
+    Hỗ trợ stateless script gửi từ query parameter để tránh phụ thuộc DB trên Vercel.
     """
-    # 1. Lấy kịch bản từ database
-    data = get_scenes_by_conversation_id(conversation_id)
-    if not data:
+    scenes = []
+    if script:
+        scenes = deserialize_script(script)
+        
+    if not scenes:
+        # Fallback tìm trong database
+        data = get_scenes_by_conversation_id(conversation_id)
+        if data:
+            scenes = data["scenes"]
+            
+    if not scenes:
         raise HTTPException(status_code=404, detail="Conversation script not found.")
         
-    scenes = data["scenes"]
-    
     # 2. Đảm bảo tất cả các file âm thanh thành phần đã được sinh trong cache
     cache_dir = get_cache_dir()
     client = request.app.state.http_client
@@ -439,17 +480,25 @@ async def api_get_podcast_metadata(
     rookieVoice: str = None,
     cynicVoice: str = None,
     enableBgm: bool = True,
-    enableSfx: bool = True
+    enableSfx: bool = True,
+    script: str = None
 ):
     """
     Endpoint trả về thông tin chính xác về thời điểm bắt đầu/kết thúc/thời lượng của từng scene trong podcast đã ghép.
+    Hỗ trợ stateless script gửi từ query parameter.
     """
-    data = get_scenes_by_conversation_id(conversation_id)
-    if not data:
+    scenes = []
+    if script:
+        scenes = deserialize_script(script)
+        
+    if not scenes:
+        data = get_scenes_by_conversation_id(conversation_id)
+        if data:
+            scenes = data["scenes"]
+            
+    if not scenes:
         raise HTTPException(status_code=404, detail="Conversation script not found.")
         
-    scenes = data["scenes"]
-    
     # Gán các voice_id vào scenes để khớp với podcast đã sinh
     for scene in scenes:
         speaker = scene.get("speaker", "cynic")
