@@ -83,6 +83,4 @@ global_brain
 # Scratch files
 /scratch/
 
-# prebuilt build-time binaries
-/api/bin/
 

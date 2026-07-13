@@ -82,9 +82,9 @@ def get_assets_dir() -> str:
 
 def ensure_ffmpeg():
     """
-    Đảm bảo ffmpeg khả dụng trên Vercel bằng cách:
-    1. Kiểm tra ffmpeg trên hệ thống.
-    2. Kiểm tra prebuilt ffmpeg (được tải ở build-time trong api/bin/ffmpeg).
+    Đảm bảo ffmpeg khả dụng bằng cách:
+    1. Kiểm tra xem ffmpeg đã có trên hệ thống chưa.
+    2. Sử dụng thư viện static-ffmpeg được đóng gói sẵn qua pip ở build-time.
     3. Tải static binary từ nguồn uy tín vào /tmp/bin khi chạy ở runtime (fallback cuối cùng).
     """
     import urllib.request
@@ -100,23 +100,19 @@ def ensure_ffmpeg():
             print(f"! [FFmpeg Warning] Lỗi cấu hình AudioSegment.converter từ hệ thống: {e}")
         return True
 
-    # 2. Kiểm tra prebuilt ffmpeg được tải ở build-time (giúp cold start 0s)
-    api_dir = os.path.dirname(os.path.abspath(__file__))
-    prebuilt_dir = os.path.join(api_dir, "bin")
-    prebuilt_ffmpeg = os.path.join(prebuilt_dir, "ffmpeg")
-    if os.path.exists(prebuilt_ffmpeg):
-        try:
-            # Cấp quyền thực thi nếu chưa có
-            st = os.stat(prebuilt_ffmpeg)
-            os.chmod(prebuilt_ffmpeg, st.st_mode | stat.S_IEXEC)
-            AudioSegment.converter = prebuilt_ffmpeg
-            # Thêm prebuilt_dir vào PATH để pydub có thể tìm thấy
-            if prebuilt_dir not in os.environ.get("PATH", ""):
-                os.environ["PATH"] = prebuilt_dir + os.pathsep + os.environ.get("PATH", "")
-            print("✓ [FFmpeg] Sử dụng prebuilt ffmpeg thành công tại:", prebuilt_ffmpeg)
+    # 2. Sử dụng static-ffmpeg đã được cài đặt qua pip ở build-time
+    try:
+        import static_ffmpeg
+        # static-ffmpeg sẽ tự động thêm thư mục chứa ffmpeg binary của nó vào PATH của OS
+        static_ffmpeg.add_paths()
+        
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if ffmpeg_bin:
+            AudioSegment.converter = ffmpeg_bin
+            print("✓ [FFmpeg] Sử dụng static-ffmpeg thành công tại:", ffmpeg_bin)
             return True
-        except Exception as e:
-            print(f"! [FFmpeg Warning] Lỗi cấu hình prebuilt ffmpeg: {e}")
+    except Exception as e:
+        print(f"! [FFmpeg Warning] Không thể cấu hình static-ffmpeg: {e}")
         
     bin_dir = "/tmp/bin"
     ffmpeg_path = os.path.join(bin_dir, "ffmpeg")
@@ -186,20 +182,16 @@ def wait_for_ffmpeg(timeout_seconds: int = 15):
             pass
         return True
         
-    # 2. Kiểm tra prebuilt ffmpeg
-    api_dir = os.path.dirname(os.path.abspath(__file__))
-    prebuilt_dir = os.path.join(api_dir, "bin")
-    prebuilt_ffmpeg = os.path.join(prebuilt_dir, "ffmpeg")
-    if os.path.exists(prebuilt_ffmpeg):
-        try:
-            st = os.stat(prebuilt_ffmpeg)
-            os.chmod(prebuilt_ffmpeg, st.st_mode | stat.S_IEXEC)
-            AudioSegment.converter = prebuilt_ffmpeg
-            if prebuilt_dir not in os.environ.get("PATH", ""):
-                os.environ["PATH"] = prebuilt_dir + os.pathsep + os.environ.get("PATH", "")
+    # 2. Kiểm tra static-ffmpeg
+    try:
+        import static_ffmpeg
+        static_ffmpeg.add_paths()
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if ffmpeg_bin:
+            AudioSegment.converter = ffmpeg_bin
             return True
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     bin_dir = "/tmp/bin"
     ffmpeg_path = os.path.join(bin_dir, "ffmpeg")
@@ -229,6 +221,7 @@ def wait_for_ffmpeg(timeout_seconds: int = 15):
         
     print("✗ [FFmpeg] Quá thời gian chờ ffmpeg.")
     return False
+
 
 
 def clean_old_cache(cache_dir: str, max_size_mb: int = 300):

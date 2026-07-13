@@ -7,4 +7,5 @@ python-dotenv
 pydub
 gTTS
 edge-tts
+static-ffmpeg
 
