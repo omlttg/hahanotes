@@ -260,6 +260,36 @@ async def _generate_gtts_fallback_internal(text: str, speaker: str, filename: st
             await asyncio.sleep(attempt * 0.5)
     return ""
 
+async def _generate_edge_tts_fallback(text: str, speaker: str, filename: str, file_path: str) -> bool:
+    """
+    Sinh giọng đọc fallback sử dụng Microsoft Edge TTS.
+    Giọng đọc chất lượng cao giống ElevenLabs, không giới hạn quota và không bị chặn IP trên Vercel.
+    """
+    try:
+        import edge_tts
+        # Rookie: Giọng Mỹ nữ trẻ trung năng động (en-US-AnaNeural)
+        # Cynic: Giọng Anh nam trầm ấm mỉa mai (en-GB-RyanNeural)
+        voice = "en-US-AnaNeural" if speaker.lower().strip() == "rookie" else "en-GB-RyanNeural"
+        
+        communicate = edge_tts.Communicate(text, voice)
+        await communicate.save(file_path)
+        
+        # Xác thực file vừa lưu xem có hợp lệ không
+        if is_valid_mp3(file_path):
+            print(f"✓ [Edge TTS Fallback Success] Đã sinh và lưu file cache bằng Edge TTS: {filename}")
+            return True
+        else:
+            print(f"⚠️ [Edge TTS Fallback Warning] Tệp Edge TTS sinh ra bị hỏng.")
+            if os.path.exists(file_path):
+                try: os.remove(file_path)
+                except: pass
+    except Exception as e:
+        print(f"⚠️ [Edge TTS Fallback Error] Lỗi Edge TTS: {e}")
+        if os.path.exists(file_path):
+            try: os.remove(file_path)
+            except: pass
+    return False
+
 async def generate_audio_file_async(text: str, speaker: str, voice_id: str = None, client: httpx.AsyncClient = None) -> str:
     """
     Tạo hoặc tải file audio đã được cache cho câu thoại (Async version).
@@ -295,11 +325,16 @@ async def generate_audio_file_async(text: str, speaker: str, voice_id: str = Non
             except: pass
 
         # Circuit Breaker: Kiểm tra xem ElevenLabs đã bị vô hiệu hóa trước đó do lỗi Quota/Auth chưa.
-        # Nếu đã bị vô hiệu hóa, chuyển ngay sang gTTS để tránh các lượt gọi API thất bại liên tiếp làm nghẽn tiến trình (Vercel timeout).
+        # Nếu đã bị vô hiệu hóa, chuyển ngay sang Edge TTS fallback để tránh Vercel timeout.
         global ELEVENLABS_DISABLED
         if ELEVENLABS_DISABLED:
-            print("[TTS Info] ElevenLabs đang bị tạm khóa (Circuit Breaker). Chuyển thẳng sang gTTS fallback...")
+            print("[TTS Info] ElevenLabs đang bị tạm khóa (Circuit Breaker). Chuyển thẳng sang Edge TTS fallback...")
+            edge_success = await _generate_edge_tts_fallback(text, speaker, filename, file_path)
+            if edge_success:
+                return filename
+            print("⚠️ [TTS Warning] Edge TTS thất bại trong Circuit Breaker. Chuyển sang gTTS fallback...")
             return await _generate_gtts_fallback_internal(text, speaker, filename, file_path)
+
 
         api_key = os.getenv("ELEVENLABS_API_KEY")
         if not api_key:
@@ -363,7 +398,15 @@ async def generate_audio_file_async(text: str, speaker: str, voice_id: str = Non
                 await asyncio.sleep(attempt * 0.5)
         
         # Fallback cuối cùng nếu lỗi ElevenLabs qua hết các lần thử
-        print(f"⚠️ [TTS Warning] Không sinh được giọng từ ElevenLabs sau {max_retries} lần thử. Đang chuyển sang gTTS...")
+        print(f"⚠️ [TTS Warning] Không sinh được giọng từ ElevenLabs sau {max_retries} lần thử. Đang chuyển sang Edge TTS fallback...")
+        
+        # 1. Thử Microsoft Edge TTS (ổn định, không giới hạn quota, giọng đọc cực hay và không bị chặn IP)
+        edge_success = await _generate_edge_tts_fallback(text, speaker, filename, file_path)
+        if edge_success:
+            return filename
+            
+        # 2. Thử gTTS làm biện pháp cứu cánh cuối cùng
+        print("⚠️ [TTS Warning] Edge TTS thất bại. Chuyển sang gTTS fallback...")
         return await _generate_gtts_fallback_internal(text, speaker, filename, file_path)
 
 
@@ -630,6 +673,11 @@ def get_podcast_timings(
                 duration_ms = len(seg)
             except Exception:
                 duration_ms = 3000
+        else:
+            # Ước lượng độ dài chuẩn xác dựa trên số lượng từ (khớp 100% với frontend)
+            # Giúp cho Container B (stateless metadata) trả về timing chính xác ngay cả khi không có file cache.
+            word_count = len(text.split())
+            duration_ms = int(max(3200, word_count * 380))
                 
         start_sec = current_time_ms / 1000.0
         end_sec = (current_time_ms + duration_ms) / 1000.0
