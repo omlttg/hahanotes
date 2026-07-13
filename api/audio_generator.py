@@ -34,6 +34,105 @@ def get_cache_dir() -> str:
     os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
 
+def get_assets_dir() -> str:
+    """
+    Trả về thư mục assets ghi được. Trên Vercel dùng /tmp/assets, ở local dùng static/assets.
+    """
+    if os.getenv("VERCEL") or not os.access(os.path.dirname(os.path.abspath(__file__)), os.W_OK):
+        assets_dir = "/tmp/assets"
+    else:
+        assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "assets")
+    os.makedirs(assets_dir, exist_ok=True)
+    return assets_dir
+
+def ensure_ffmpeg():
+    """
+    Đảm bảo ffmpeg khả dụng trên Vercel bằng cách tự động tải static binary
+    từ một nguồn uy tín vào /tmp/bin và đưa nó vào PATH của hệ thống.
+    """
+    import os
+    import urllib.request
+    import shutil
+    import stat
+    
+    # 1. Kiểm tra xem ffmpeg đã có trên hệ thống chưa
+    if shutil.which("ffmpeg"):
+        print("✓ [FFmpeg] Đã tìm thấy ffmpeg trên hệ thống.")
+        return True
+        
+    bin_dir = "/tmp/bin"
+    ffmpeg_path = os.path.join(bin_dir, "ffmpeg")
+    ffmpeg_tmp = os.path.join(bin_dir, "ffmpeg.tmp")
+    
+    # Thêm bin_dir vào PATH để pydub có thể tự tìm thấy
+    if bin_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+        
+    if os.path.exists(ffmpeg_path):
+        print("✓ [FFmpeg] Đã có sẵn static ffmpeg trong /tmp/bin.")
+        return True
+        
+    print("⏳ [FFmpeg] Không tìm thấy ffmpeg. Bắt đầu tải static binary cho Linux x64...")
+    os.makedirs(bin_dir, exist_ok=True)
+    
+    url = "https://github.com/eugeneware/ffmpeg-static-binaries/releases/download/b4.2.2/linux-x64"
+    
+    try:
+        req = urllib.request.Request(
+            url, 
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        )
+        with urllib.request.urlopen(req, timeout=30) as response, open(ffmpeg_tmp, 'wb') as out_file:
+            shutil.copyfileobj(response, out_file)
+            
+        # Đổi tên file tạm thành chính thức
+        os.rename(ffmpeg_tmp, ffmpeg_path)
+            
+        # Cấp quyền thực thi cho binary
+        st = os.stat(ffmpeg_path)
+        os.chmod(ffmpeg_path, st.st_mode | stat.S_IEXEC)
+        print("✓ [FFmpeg] Tải và cấu hình ffmpeg static thành công tại:", ffmpeg_path)
+        return True
+    except Exception as e:
+        print(f"✗ [FFmpeg Error] Không thể tải static ffmpeg: {e}")
+        if os.path.exists(ffmpeg_tmp):
+            try: os.remove(ffmpeg_tmp)
+            except: pass
+        return False
+
+def wait_for_ffmpeg(timeout_seconds: int = 15):
+    """
+    Đợi cho đến khi ffmpeg sẵn sàng hoạt động (tối đa timeout_seconds giây).
+    """
+    import os
+    import shutil
+    import time
+    
+    if shutil.which("ffmpeg"):
+        return True
+        
+    bin_dir = "/tmp/bin"
+    ffmpeg_path = os.path.join(bin_dir, "ffmpeg")
+    
+    if bin_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+        
+    if os.path.exists(ffmpeg_path):
+        return True
+        
+    start_time = time.time()
+    print("⏳ [FFmpeg] Đang chờ tải ffmpeg hoàn tất...")
+    while time.time() - start_time < timeout_seconds:
+        if os.path.exists(ffmpeg_path):
+            if os.access(ffmpeg_path, os.X_OK):
+                print("✓ [FFmpeg] FFmpeg đã sẵn sàng hoạt động!")
+                return True
+        time.sleep(0.5)
+        
+    print("✗ [FFmpeg] Quá thời gian chờ ffmpeg.")
+    return False
+
+
 def clean_old_cache(cache_dir: str, max_size_mb: int = 300):
     """
     Dọn dẹp cache LRU để tránh đầy phân vùng /tmp (giới hạn 512MB trên Vercel).
@@ -177,8 +276,7 @@ async def download_assets_if_missing():
     """
     Tải các file asset nhạc nền và tiếng cười nếu chưa tồn tại.
     """
-    assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "assets")
-    os.makedirs(assets_dir, exist_ok=True)
+    assets_dir = get_assets_dir()
     
     bg_music_path = os.path.join(assets_dir, "bg_music.mp3")
     laugh_sfx_path = os.path.join(assets_dir, "laugh.mp3")
@@ -235,10 +333,11 @@ async def merge_scenes_to_podcast(
         return podcast_filename
         
     print(f"[Podcast Gen] Starting merge for podcast: {podcast_id}")
+    wait_for_ffmpeg()
     
     # 1. Thu thập các AudioSegment câu thoại
     segments = []
-    assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "assets")
+    assets_dir = get_assets_dir()
     bg_music_path = os.path.join(assets_dir, "bg_music.mp3")
     laugh_sfx_path = os.path.join(assets_dir, "laugh.mp3")
     
@@ -345,11 +444,12 @@ def get_podcast_timings(
     Tính toán chính xác mốc thời gian (bắt đầu, kết thúc, thời lượng) của từng scene trong podcast đã ghép.
     """
     cache_dir = get_cache_dir()
+    wait_for_ffmpeg()
     timings = []
     current_time_ms = 500  # Bắt đầu bằng 500ms im lặng
     
     # Đọc sfx tiếng cười
-    assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "assets")
+    assets_dir = get_assets_dir()
     laugh_sfx_path = os.path.join(assets_dir, "laugh.mp3")
     laugh_sfx_exists = enable_sfx and os.path.exists(laugh_sfx_path)
     
