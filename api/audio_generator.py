@@ -75,7 +75,7 @@ def ensure_ffmpeg():
     print("⏳ [FFmpeg] Không tìm thấy ffmpeg. Bắt đầu tải static binary cho Linux x64...")
     os.makedirs(bin_dir, exist_ok=True)
     
-    url = "https://github.com/eugeneware/ffmpeg-static-binaries/releases/download/b4.2.2/linux-x64"
+    url = "https://github.com/eugeneware/ffmpeg-static/releases/download/b4.2.2/linux-x64"
     
     try:
         import ssl
