@@ -78,11 +78,17 @@ def ensure_ffmpeg():
     url = "https://github.com/eugeneware/ffmpeg-static-binaries/releases/download/b4.2.2/linux-x64"
     
     try:
+        import ssl
+        # Bỏ qua kiểm tra chứng chỉ SSL để tránh lỗi trên các container Vercel thiếu certs
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        
         req = urllib.request.Request(
             url, 
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            headers={'User-Agent': 'Mozilla/5.0'}
         )
-        with urllib.request.urlopen(req, timeout=30) as response, open(ffmpeg_tmp, 'wb') as out_file:
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as response, open(ffmpeg_tmp, 'wb') as out_file:
             shutil.copyfileobj(response, out_file)
             
         # Đổi tên file tạm thành chính thức
@@ -327,10 +333,17 @@ async def merge_scenes_to_podcast(
     podcast_filename = f"podcast_{podcast_id}.mp3"
     podcast_path = os.path.join(cache_dir, podcast_filename)
     
-    # Nếu đã có file trong cache, trả về ngay
+    # Nếu đã có file trong cache và không bị trống (0 bytes), trả về ngay
     if os.path.exists(podcast_path):
-        print(f"[Podcast Cache Hit] Using existing podcast file: {podcast_filename}")
-        return podcast_filename
+        if os.path.getsize(podcast_path) > 0:
+            print(f"[Podcast Cache Hit] Using existing podcast file: {podcast_filename}")
+            return podcast_filename
+        else:
+            try:
+                os.remove(podcast_path)
+                print(f"[Podcast Cleanup] Deleted empty cached podcast file: {podcast_filename}")
+            except Exception:
+                pass
         
     print(f"[Podcast Gen] Starting merge for podcast: {podcast_id}")
     wait_for_ffmpeg()
@@ -431,6 +444,11 @@ async def merge_scenes_to_podcast(
         return podcast_filename
     except Exception as e:
         print(f"✗ [Podcast Export Error] Lỗi ghi file podcast: {e}")
+        if os.path.exists(podcast_path):
+            try:
+                os.remove(podcast_path)
+            except Exception:
+                pass
         return ""
 
 def get_podcast_timings(

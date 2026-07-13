@@ -468,8 +468,14 @@ async def api_get_podcast(
     )
     podcast_path = os.path.join(cache_dir, podcast_filename)
     
-    if podcast_filename and os.path.exists(podcast_path):
+    if podcast_filename and os.path.exists(podcast_path) and os.path.getsize(podcast_path) > 0:
         return FileResponse(podcast_path, media_type="audio/mpeg", filename=f"podcast_{conversation_id}.mp3")
+        
+    if os.path.exists(podcast_path):
+        try:
+            os.remove(podcast_path)
+        except Exception:
+            pass
         
     raise HTTPException(status_code=500, detail="Failed to merge scenes into podcast.")
 

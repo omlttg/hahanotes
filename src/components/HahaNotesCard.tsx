@@ -22,6 +22,7 @@ export const HahaNotesCard: React.FC<HahaNotesCardProps> = ({
   const [activeTab, setActiveTab] = useState<'podcast' | 'video'>('podcast');
   const [isExportingVideo, setIsExportingVideo] = useState(false);
   const [isDownloadingPodcast, setIsDownloadingPodcast] = useState(false);
+  const [isPodcastPlaying, setIsPodcastPlaying] = useState(false);
 
   // Tạo URL podcast hoàn chỉnh ghép nối từ backend
   const API_BASE = typeof window !== 'undefined'
@@ -142,9 +143,11 @@ export const HahaNotesCard: React.FC<HahaNotesCardProps> = ({
               {[...Array(20)].map((_, i) => (
                 <div
                   key={i}
-                  className="bg-indigo-500/80 rounded-full w-1.5 transition-all duration-300 animate-[pulse_1s_infinite]"
+                  className={`bg-indigo-500/80 rounded-full w-1.5 transition-all duration-300 ${
+                    isPodcastPlaying ? 'animate-[pulse_1s_infinite]' : ''
+                  }`}
                   style={{
-                    height: `${15 + Math.random() * 80}%`,
+                    height: isPodcastPlaying ? `${15 + Math.random() * 80}%` : '8px',
                     animationDelay: `${i * 0.05}s`
                   }}
                 />
@@ -156,6 +159,9 @@ export const HahaNotesCard: React.FC<HahaNotesCardProps> = ({
               <audio 
                 src={podcastUrl} 
                 controls 
+                onPlay={() => setIsPodcastPlaying(true)}
+                onPause={() => setIsPodcastPlaying(false)}
+                onEnded={() => setIsPodcastPlaying(false)}
                 className="w-full accent-indigo-500 bg-slate-950 rounded-lg"
               />
               
