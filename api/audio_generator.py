@@ -15,6 +15,11 @@ LAUGH_SFX_URL = "https://www.soundjay.com/human/sounds/laughter-3.mp3"          
 # Lock toàn cục để tránh xung đột ghi đè file cache đồng thời
 _audio_write_lock = asyncio.Lock()
 
+# Biến cờ toàn cục dùng làm Circuit Breaker để ngắt mạch ElevenLabs
+# Nếu ElevenLabs hết quota hoặc sai key (mã lỗi 400, 401, 403), cờ này được bật
+# để toàn bộ các lượt gọi sau chuyển thẳng sang gTTS, tránh bị Vercel Serverless Timeout (10 giây)
+ELEVENLABS_DISABLED = False
+
 def is_valid_mp3(file_path: str) -> bool:
     """
     Kiểm tra xem tệp mp3 có tồn tại, có dung lượng hợp lệ (> 1000 bytes)
@@ -289,6 +294,13 @@ async def generate_audio_file_async(text: str, speaker: str, voice_id: str = Non
             try: os.remove(file_path)
             except: pass
 
+        # Circuit Breaker: Kiểm tra xem ElevenLabs đã bị vô hiệu hóa trước đó do lỗi Quota/Auth chưa.
+        # Nếu đã bị vô hiệu hóa, chuyển ngay sang gTTS để tránh các lượt gọi API thất bại liên tiếp làm nghẽn tiến trình (Vercel timeout).
+        global ELEVENLABS_DISABLED
+        if ELEVENLABS_DISABLED:
+            print("[TTS Info] ElevenLabs đang bị tạm khóa (Circuit Breaker). Chuyển thẳng sang gTTS fallback...")
+            return await _generate_gtts_fallback_internal(text, speaker, filename, file_path)
+
         api_key = os.getenv("ELEVENLABS_API_KEY")
         if not api_key:
             print("[TTS Warning] Không tìm thấy ELEVENLABS_API_KEY trong .env. Sử dụng gTTS fallback...")
@@ -333,17 +345,27 @@ async def generate_audio_file_async(text: str, speaker: str, voice_id: str = Non
                     await asyncio.sleep(wait_time)
                 else:
                     print(f"✗ [TTS API Error] ElevenLabs API trả về mã lỗi {response.status_code}")
+                    # Nếu gặp lỗi Quota/Auth (400, 401, 403), ngắt mạch (Circuit Breaker) ngay lập tức
+                    # để các lượt gọi song song hoặc tuần sau tiếp theo chuyển thẳng sang gTTS mà không phí thời gian gọi API.
+                    if response.status_code in [400, 401, 403]:
+                        print(f"⚠️ [TTS Warning] Phát hiện lỗi Quota/Auth ({response.status_code}) từ ElevenLabs. Kích hoạt Circuit Breaker.")
+                        ELEVENLABS_DISABLED = True
+                        break
                     if attempt == max_retries:
                         break
             except Exception as exc:
                 print(f"⚠️ [TTS API Exception] Lỗi ElevenLabs lần thử {attempt}: {exc}")
                 if attempt == max_retries:
+                    # Gặp lỗi kết nối liên tiếp cũng có thể ngắt mạch để tránh block Vercel Serverless Function
+                    print("⚠️ [TTS Warning] Thất bại kết nối liên tiếp tới ElevenLabs. Kích hoạt Circuit Breaker.")
+                    ELEVENLABS_DISABLED = True
                     break
                 await asyncio.sleep(attempt * 0.5)
         
         # Fallback cuối cùng nếu lỗi ElevenLabs qua hết các lần thử
         print(f"⚠️ [TTS Warning] Không sinh được giọng từ ElevenLabs sau {max_retries} lần thử. Đang chuyển sang gTTS...")
         return await _generate_gtts_fallback_internal(text, speaker, filename, file_path)
+
 
 def generate_audio_file(text: str, speaker: str, voice_id: str = None) -> str:
     """
