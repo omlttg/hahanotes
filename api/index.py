@@ -22,6 +22,54 @@ except ImportError:
 # Load environment variables (.env file)
 load_dotenv()
 
+def ensure_ffmpeg():
+    """
+    Đảm bảo ffmpeg khả dụng trên Vercel bằng cách tự động tải static binary
+    từ một nguồn uy tín vào /tmp/bin và đưa nó vào PATH của hệ thống.
+    """
+    import os
+    import urllib.request
+    import shutil
+    import stat
+    
+    # Kiểm tra xem ffmpeg đã có trên hệ thống chưa
+    if shutil.which("ffmpeg"):
+        print("✓ [FFmpeg] Đã tìm thấy ffmpeg trên hệ thống.")
+        return True
+        
+    bin_dir = "/tmp/bin"
+    ffmpeg_path = os.path.join(bin_dir, "ffmpeg")
+    
+    # Thêm bin_dir vào PATH để pydub có thể tự tìm thấy
+    if bin_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+        
+    if os.path.exists(ffmpeg_path):
+        print("✓ [FFmpeg] Đã có sẵn static ffmpeg trong /tmp/bin.")
+        return True
+        
+    print("⏳ [FFmpeg] Không tìm thấy ffmpeg. Bắt đầu tải static binary cho Linux x64...")
+    os.makedirs(bin_dir, exist_ok=True)
+    
+    url = "https://github.com/eugeneware/ffmpeg-static-binaries/releases/download/b4.2.2/linux-x64"
+    
+    try:
+        req = urllib.request.Request(
+            url, 
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        )
+        with urllib.request.urlopen(req, timeout=30) as response, open(ffmpeg_path, 'wb') as out_file:
+            shutil.copyfileobj(response, out_file)
+            
+        # Cấp quyền thực thi cho binary
+        st = os.stat(ffmpeg_path)
+        os.chmod(ffmpeg_path, st.st_mode | stat.S_IEXEC)
+        print("✓ [FFmpeg] Tải và cấu hình ffmpeg static thành công tại:", ffmpeg_path)
+        return True
+    except Exception as e:
+        print(f"✗ [FFmpeg Error] Không thể tải static ffmpeg: {e}")
+        return False
+
 def parse_chat_reply(reply: str) -> list[dict]:
     """
     Phân tích chuỗi phản hồi chat chứa [rookie] và [cynic] thành danh sách các câu thoại có sender và text.
@@ -154,6 +202,7 @@ async def lifespan(app: FastAPI):
     app.state.http_client = httpx.AsyncClient()
     try:
         init_db()
+        ensure_ffmpeg()
         # Tải assets nhạc nền và tiếng cười bất đồng bộ
         import asyncio
         try:
@@ -162,7 +211,7 @@ async def lifespan(app: FastAPI):
             from audio_generator import download_assets_if_missing
         asyncio.create_task(download_assets_if_missing())
     except Exception as e:
-        print(f"! [DB Error] Lỗi khởi tạo SQLite hoặc tải assets: {e}")
+        print(f"! [DB Error] Lỗi khởi tạo SQLite, FFmpeg hoặc tải assets: {e}")
     yield
     # Giải phóng http client
     await app.state.http_client.aclose()
