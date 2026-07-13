@@ -148,7 +148,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       const isCynicTalking = activeScene.speaker === 'cynic' && currentTime >= timing.start && currentTime <= timing.end;
 
       // 1. Vẽ Background Split-Screen
-      gradientOffset += 0.003;
+      gradientOffset += 0.0015;
       
       // Nửa trên (Rookie)
       ctx.save();
@@ -217,7 +217,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
       ctx.save();
       for (let i = 0; i < barCount; i++) {
-        const timeFactor = Date.now() * 0.015;
+        const timeFactor = Date.now() * 0.0075;
         const sineValue = Math.sin(timeFactor + i * 0.4) * Math.cos(timeFactor * 0.5 + i * 0.1);
         const amp = maxAmp * (0.2 + 0.8 * Math.abs(sineValue));
         const x = startX + i * (barWidth + gap);
@@ -407,7 +407,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       });
       ctx.restore();
 
-      // 6. Meme Pop-up & Fade-out ở trung tâm
+      // 6. Meme Pop-up & Fade-out ở vị trí động đối xứng (Không che phụ đề ở Y = 375)
       const sceneElapsed = currentTime - timing.start;
       if (sceneElapsed >= 0 && sceneElapsed <= 1.5) {
         const activeMemeId = activeScene.memeId;
@@ -430,9 +430,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             translateY = progress * 25;
           }
           
-          const speakFactor = (isRookieTalking || isCynicTalking) ? Math.sin(Date.now() * 0.015) * 0.02 : 0;
+          // Rookie nói -> Vẽ meme ở phía dưới (Y = 460). Cynic nói -> Vẽ meme ở phía trên (Y = 220).
+          const memeCenterY = activeScene.speaker === 'rookie' ? 460 : 220;
+          
+          const speakFactor = (isRookieTalking || isCynicTalking) ? Math.sin(Date.now() * 0.01) * 0.02 : 0;
           ctx.globalAlpha = memeOpacity;
-          ctx.translate(canvas.width / 2, 320 + translateY);
+          ctx.translate(canvas.width / 2, memeCenterY + translateY);
           ctx.scale(memeScale + speakFactor, memeScale + speakFactor);
 
           // Khung Polaroid viền Neon

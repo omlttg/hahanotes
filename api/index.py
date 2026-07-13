@@ -468,6 +468,12 @@ async def api_get_podcast(
     cache_dir = get_cache_dir()
     client = request.app.state.http_client
     
+    tasks = []
+    try:
+        from api.audio_generator import is_valid_mp3, generate_audio_file_async
+    except ImportError:
+        from audio_generator import is_valid_mp3, generate_audio_file_async
+
     for scene in scenes:
         speaker = scene.get("speaker", "cynic")
         text = scene.get("text", "")
@@ -484,9 +490,16 @@ async def api_get_podcast(
         # Lưu mapping nếu chưa có để stream on-demand hoạt động
         save_audio_mapping(md5_hash, text, speaker, voice_id)
         
-        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-            print(f"[Podcast Build] Sinh giọng đọc ElevenLabs thiếu cho: {text[:20]}...")
-            await generate_audio_file_async(text, speaker, voice_id, client=client)
+        if not is_valid_mp3(file_path):
+            if os.path.exists(file_path):
+                try: os.remove(file_path)
+                except: pass
+            print(f"[Podcast Build] Thêm vào hàng đợi sinh song song cho: {text[:20]}...")
+            tasks.append(generate_audio_file_async(text, speaker, voice_id, client=client))
+            
+    if tasks:
+        print(f"[Podcast Build] Bắt đầu sinh song song {len(tasks)} tệp giọng đọc thiếu/hỏng...")
+        await asyncio.gather(*tasks)
             
     # 3. Tiến hành ghép nối podcast
     try:

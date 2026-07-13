@@ -15,6 +15,20 @@ LAUGH_SFX_URL = "https://www.soundjay.com/human/sounds/laughter-3.mp3"          
 # Lock toàn cục để tránh xung đột ghi đè file cache đồng thời
 _audio_write_lock = asyncio.Lock()
 
+def is_valid_mp3(file_path: str) -> bool:
+    """
+    Kiểm tra xem tệp mp3 có tồn tại, có dung lượng hợp lệ (> 100 bytes)
+    và có thể đọc được bằng pydub (không bị hỏng dở dang) hay không.
+    """
+    if not os.path.exists(file_path) or os.path.getsize(file_path) < 100:
+        return False
+    try:
+        # Thử đọc 100ms đầu tiên để kiểm tra tính hợp lệ
+        AudioSegment.from_mp3(file_path)[:100]
+        return True
+    except Exception:
+        return False
+
 def get_voice_id(speaker: str) -> str:
     """
     Trả về Voice ID tương ứng cho Rookie hoặc Cynic từ biến môi trường
@@ -201,21 +215,33 @@ def clean_old_cache(cache_dir: str, max_size_mb: int = 300):
 async def _generate_gtts_fallback_internal(text: str, speaker: str, filename: str, file_path: str) -> str:
     """
     Helper thực hiện gọi gTTS và ghi file âm thanh.
+    Có cơ chế tự động thử lại 3 lần và xác thực tệp vừa lưu.
     """
-    try:
-        from gtts import gTTS
-        # Rookie -> English American (lang='en', tld='com')
-        # Cynic -> English British (lang='en', tld='co.uk')
-        tld = "com" if speaker.lower().strip() == "rookie" else "co.uk"
-        tts = gTTS(text=text, lang="en", tld=tld)
-        
-        # Ghi file thông qua chạy đồng bộ an toàn trong thread pool
-        await asyncio.to_thread(tts.save, file_path)
-        print(f"✓ [TTS Fallback Success] Đã sinh và lưu file cache bằng gTTS: {filename}")
-        return filename
-    except Exception as fallback_err:
-        print(f"✗ [TTS Fallback Error] Thất bại hoàn toàn khi sinh gTTS: {fallback_err}")
-        return ""
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            from gtts import gTTS
+            tld = "com" if speaker.lower().strip() == "rookie" else "co.uk"
+            tts = gTTS(text=text, lang="en", tld=tld)
+            
+            # Ghi file thông qua chạy đồng bộ an toàn trong thread pool
+            await asyncio.to_thread(tts.save, file_path)
+            
+            # Xác thực file vừa lưu xem có hợp lệ không
+            if is_valid_mp3(file_path):
+                print(f"✓ [TTS Fallback Success] Đã sinh và lưu file cache bằng gTTS (Lần thử {attempt}): {filename}")
+                return filename
+            else:
+                raise ValueError("Tệp gTTS sinh ra bị hỏng.")
+        except Exception as fallback_err:
+            print(f"⚠️ [TTS Fallback Error] Lỗi gTTS lần thử {attempt}: {fallback_err}")
+            if os.path.exists(file_path):
+                try: os.remove(file_path)
+                except: pass
+            if attempt == max_retries:
+                return ""
+            await asyncio.sleep(attempt * 0.5)
+    return ""
 
 async def generate_audio_file_async(text: str, speaker: str, voice_id: str = None, client: httpx.AsyncClient = None) -> str:
     """
@@ -233,8 +259,8 @@ async def generate_audio_file_async(text: str, speaker: str, voice_id: str = Non
     cache_dir = get_cache_dir()
     file_path = os.path.join(cache_dir, filename)
     
-    # 1. Nếu file đã tồn tại và hợp lệ (> 0 bytes), trả về tên file luôn
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+    # 1. Nếu file đã tồn tại và hoàn toàn hợp lệ (không bị hỏng), trả về tên file luôn
+    if is_valid_mp3(file_path):
         try:
             os.utime(file_path, None)  # Cập nhật access time cho LRU
         except OSError:
@@ -245,8 +271,11 @@ async def generate_audio_file_async(text: str, speaker: str, voice_id: str = Non
     # Bọc ghi file trong lock để đảm bảo thread-safe/async-safe
     async with _audio_write_lock:
         # Kiểm tra lại lần nữa sau khi lấy được lock (double-checked locking)
-        if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        if is_valid_mp3(file_path):
             return filename
+        elif os.path.exists(file_path):
+            try: os.remove(file_path)
+            except: pass
 
         api_key = os.getenv("ELEVENLABS_API_KEY")
         if not api_key:
@@ -270,27 +299,39 @@ async def generate_audio_file_async(text: str, speaker: str, voice_id: str = Non
         # Dọn dẹp cache trước khi tải mới để đảm bảo đủ dung lượng
         clean_old_cache(cache_dir)
         
-        try:
-            print(f"[TTS API Call Async] Đang sinh giọng nói cho {speaker} bằng ElevenLabs...")
-            
-            # Sử dụng AsyncClient truyền vào hoặc khởi tạo tạm thời
-            if client is None:
-                async with httpx.AsyncClient() as temp_client:
-                    response = await temp_client.post(url, json=data, headers=headers, timeout=20.0)
-            else:
-                response = await client.post(url, json=data, headers=headers, timeout=20.0)
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                print(f"[TTS API Call Async] Đang sinh giọng nói cho {speaker} bằng ElevenLabs (Lần thử {attempt}/{max_retries})...")
                 
-            if response.status_code == 200:
-                with open(file_path, "wb") as f:
-                    f.write(response.content)
-                print(f"✓ [TTS Success] Đã sinh và lưu file cache từ ElevenLabs: {filename}")
-                return filename
-            else:
-                print(f"✗ [TTS API Error] ElevenLabs API trả về mã lỗi {response.status_code}: {response.text}")
-                raise ValueError(f"ElevenLabs status {response.status_code}")
-        except Exception as e:
-            print(f"⚠️ [TTS Warning] Không sinh được giọng từ ElevenLabs ({str(e)}). Đang tự động chuyển sang gTTS làm fallback...")
-            return await _generate_gtts_fallback_internal(text, speaker, filename, file_path)
+                if client is None:
+                    async with httpx.AsyncClient() as temp_client:
+                        response = await temp_client.post(url, json=data, headers=headers, timeout=15.0)
+                else:
+                    response = await client.post(url, json=data, headers=headers, timeout=15.0)
+                    
+                if response.status_code == 200:
+                    with open(file_path, "wb") as f:
+                        f.write(response.content)
+                    print(f"✓ [TTS Success] Đã sinh và lưu file cache từ ElevenLabs: {filename}")
+                    return filename
+                elif response.status_code == 429:
+                    wait_time = attempt * 1.5
+                    print(f"⚠️ [TTS API Rate Limit] ElevenLabs 429. Chờ {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    print(f"✗ [TTS API Error] ElevenLabs API trả về mã lỗi {response.status_code}")
+                    if attempt == max_retries:
+                        raise ValueError(f"ElevenLabs status {response.status_code}")
+            except Exception as exc:
+                print(f"⚠️ [TTS API Exception] Lỗi ElevenLabs lần thử {attempt}: {exc}")
+                if attempt == max_retries:
+                    raise exc
+                await asyncio.sleep(attempt * 0.5)
+        
+        # Fallback cuối cùng nếu lỗi ElevenLabs qua hết các lần thử
+        print(f"⚠️ [TTS Warning] Không sinh được giọng từ ElevenLabs sau {max_retries} lần thử. Đang chuyển sang gTTS...")
+        return await _generate_gtts_fallback_internal(text, speaker, filename, file_path)
 
 def generate_audio_file(text: str, speaker: str, voice_id: str = None) -> str:
     """
@@ -399,6 +440,32 @@ async def merge_scenes_to_podcast(
         except Exception as e:
             print(f"[Podcast Gen] Lỗi đọc sfx tiếng cười: {e}")
             
+    # Tải song song tất cả các tệp thiếu trước khi đọc
+    missing_tasks = []
+    for scene in scenes:
+        speaker = scene.get("speaker", "cynic")
+        text = scene.get("text", "")
+        voice_id = scene.get("voice_id")
+        if not voice_id:
+            voice_id = rookie_voice if speaker == "rookie" else cynic_voice
+        if not voice_id:
+            voice_id = get_voice_id(speaker)
+            
+        hash_input = f"{voice_id}:{text}".encode('utf-8')
+        md5_hash = hashlib.md5(hash_input).hexdigest()
+        scene_file = os.path.join(cache_dir, f"{md5_hash}.mp3")
+        
+        if not is_valid_mp3(scene_file):
+            if os.path.exists(scene_file):
+                try: os.remove(scene_file)
+                except: pass
+            print(f"[Podcast Gen] Thiếu hoặc hỏng file audio cho: {text[:20]}... Đang thêm vào hàng đợi sinh...")
+            missing_tasks.append(generate_audio_file_async(text, speaker, voice_id))
+            
+    if missing_tasks:
+        print(f"[Podcast Gen] Bắt đầu sinh song song {len(missing_tasks)} tệp âm thanh thiếu...")
+        await asyncio.gather(*missing_tasks)
+        
     for idx, scene in enumerate(scenes):
         speaker = scene.get("speaker", "cynic")
         text = scene.get("text", "")
@@ -412,23 +479,16 @@ async def merge_scenes_to_podcast(
         md5_hash = hashlib.md5(hash_input).hexdigest()
         scene_file = os.path.join(cache_dir, f"{md5_hash}.mp3")
         
-        # Nếu chưa có file (hoặc file trống), tự động sinh lại tại đây luôn!
-        if not os.path.exists(scene_file) or os.path.getsize(scene_file) == 0:
-            print(f"[Podcast Gen] Thiếu file audio cho: {text[:20]}... Đang sinh lại...")
-            await generate_audio_file_async(text, speaker, voice_id)
-            
-        if os.path.exists(scene_file) and os.path.getsize(scene_file) > 0:
+        if is_valid_mp3(scene_file):
             try:
                 seg = AudioSegment.from_mp3(scene_file)
                 segments.append((speaker, seg))
             except Exception as e:
-                print(f"[Podcast Gen] Lỗi đọc segment {md5_hash}: {e}")
-                # Fallback: Tạo một đoạn silent ngắn để ko bị mất sub
+                print(f"[Podcast Gen] Lỗi đọc segment {md5_hash} (mặc dù đã pass validation): {e}")
                 segments.append((speaker, AudioSegment.silent(duration=2000)))
         else:
-            # Fallback nếu vẫn sinh lỗi
             print(f"[Podcast Gen Warning] Thất bại khi sinh file audio. Sử dụng silent segment.")
-            segments.append((speaker, AudioSegment.silent(duration=3000)))
+            segments.append((speaker, AudioSegment.silent(duration=2000)))
             
     if not segments:
         print("[Podcast Gen Error] Không có audio segment nào để ghép nối.")
@@ -530,7 +590,7 @@ def get_podcast_timings(
         scene_file = os.path.join(cache_dir, f"{md5_hash}.mp3")
         
         duration_ms = 3000  # Fallback
-        if os.path.exists(scene_file) and os.path.getsize(scene_file) > 0:
+        if is_valid_mp3(scene_file):
             try:
                 seg = AudioSegment.from_mp3(scene_file)
                 duration_ms = len(seg)

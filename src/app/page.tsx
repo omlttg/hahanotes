@@ -406,8 +406,8 @@ export default function Home() {
       <div className="flex-1 flex flex-col h-full relative overflow-hidden bg-gradient-to-b from-slate-950 to-slate-900/40">
         
         {/* Header Khung Chat */}
-        <header className="h-[60px] bg-slate-900 border-b border-indigo-500/10 flex items-center justify-between px-4 md:px-6 z-10 shrink-0">
-          <div className="flex items-center gap-3">
+        <header className="h-[60px] bg-slate-900 border-b border-indigo-500/10 flex items-center justify-between px-3 md:px-6 z-10 shrink-0">
+          <div className="flex items-center gap-2 md:gap-3">
             {/* Nút Toggle Sidebar trên mobile */}
             <button 
               onClick={() => setSidebarOpen(true)}
@@ -416,27 +416,27 @@ export default function Home() {
               <span>☰</span>
             </button>
 
-            <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-teal-300 to-indigo-400 cursor-pointer md:hidden" onClick={handleNewChat}>
+            <span className="text-lg md:text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-teal-300 to-indigo-400 cursor-pointer md:hidden" onClick={handleNewChat}>
               HahaNotes
             </span>
             
             {selectedCategory && (
-              <div className="flex items-center gap-2 bg-slate-950/80 px-3 py-1 rounded-full border border-indigo-500/20">
+              <div className="flex items-center gap-1.5 bg-slate-950/80 px-2.5 py-1 rounded-full border border-indigo-500/20">
                 <span className="text-xs">{activeCategory?.emoji}</span>
-                <span className="text-[11px] font-semibold text-indigo-400">
-                  Channel: {activeCategory?.title}
+                <span className="text-[10px] sm:text-[11px] font-semibold text-indigo-400">
+                  <span className="hidden sm:inline">Channel: </span>{activeCategory?.title}
                 </span>
               </div>
             )}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             {error && (
               <span className="text-[10px] text-red-400 font-bold bg-red-950/40 border border-red-500/20 px-2 py-0.5 rounded">
                 API Error
               </span>
             )}
-            <span className="text-[10px] text-neutral-500">
+            <span className="text-[10px] text-neutral-500 hidden sm:inline">
               ElevenLabs Adam/Bella
             </span>
           </div>
