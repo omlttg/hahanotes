@@ -334,11 +334,11 @@ async def generate_audio_file_async(text: str, speaker: str, voice_id: str = Non
                 else:
                     print(f"✗ [TTS API Error] ElevenLabs API trả về mã lỗi {response.status_code}")
                     if attempt == max_retries:
-                        raise ValueError(f"ElevenLabs status {response.status_code}")
+                        break
             except Exception as exc:
                 print(f"⚠️ [TTS API Exception] Lỗi ElevenLabs lần thử {attempt}: {exc}")
                 if attempt == max_retries:
-                    raise exc
+                    break
                 await asyncio.sleep(attempt * 0.5)
         
         # Fallback cuối cùng nếu lỗi ElevenLabs qua hết các lần thử
