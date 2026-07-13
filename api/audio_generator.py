@@ -22,8 +22,8 @@ ELEVENLABS_DISABLED = False
 
 def is_valid_mp3(file_path: str) -> bool:
     """
-    Kiểm tra xem tệp mp3 có tồn tại, có dung lượng hợp lệ (> 1000 bytes)
-    và có cấu trúc header MP3 hợp lệ hay không (không phụ thuộc vào ffmpeg/pydub).
+    Check if the mp3 file exists, has valid size (> 1000 bytes)
+    and has a valid MP3 header structure (independent of ffmpeg/pydub).
     """
     if not os.path.exists(file_path):
         return False
@@ -48,8 +48,8 @@ def is_valid_mp3(file_path: str) -> bool:
 
 def get_voice_id(speaker: str) -> str:
     """
-    Trả về Voice ID tương ứng cho Rookie hoặc Cynic từ biến môi trường
-    hoặc dùng các giá trị mặc định.
+    Return the corresponding Voice ID for Rookie or Cynic from env variables
+    or default values.
     """
     speaker_lower = speaker.lower().strip()
     if "rookie" in speaker_lower:
@@ -59,7 +59,7 @@ def get_voice_id(speaker: str) -> str:
 
 def get_cache_dir() -> str:
     """
-    Trả về thư mục cache ghi được. Ở local dùng static/audio, trên Vercel dùng /tmp/hahanotes_cache.
+    Return the writable cache directory. Local uses static/audio, Vercel uses /tmp/hahanotes_cache.
     """
     # Vercel Free Serverless chỉ cho phép ghi vào /tmp
     if os.getenv("VERCEL") or not os.access(os.path.dirname(os.path.abspath(__file__)), os.W_OK):
@@ -71,7 +71,7 @@ def get_cache_dir() -> str:
 
 def get_assets_dir() -> str:
     """
-    Trả về thư mục assets ghi được. Trên Vercel dùng /tmp/assets, ở local dùng static/assets.
+    Return the writable assets directory. Local uses static/assets, Vercel uses /tmp/assets.
     """
     if os.getenv("VERCEL") or not os.access(os.path.dirname(os.path.abspath(__file__)), os.W_OK):
         assets_dir = "/tmp/assets"
@@ -82,10 +82,10 @@ def get_assets_dir() -> str:
 
 def ensure_ffmpeg():
     """
-    Đảm bảo ffmpeg khả dụng bằng cách:
-    1. Kiểm tra xem ffmpeg đã có trên hệ thống chưa.
-    2. Sử dụng thư viện static-ffmpeg được đóng gói sẵn qua pip ở build-time.
-    3. Tải static binary từ nguồn uy tín vào /tmp/bin khi chạy ở runtime (fallback cuối cùng).
+    Ensure ffmpeg is available by:
+    1. Checking the system path.
+    2. Using static-ffmpeg installed at build-time.
+    3. Downloading static binary to /tmp/bin at runtime as fallback.
     """
     import urllib.request
     import shutil
@@ -169,7 +169,7 @@ def ensure_ffmpeg():
 
 def wait_for_ffmpeg(timeout_seconds: int = 15):
     """
-    Đợi cho đến khi ffmpeg sẵn sàng hoạt động (tối đa timeout_seconds giây).
+    Wait for ffmpeg to be ready (up to timeout_seconds).
     """
     import shutil
     import time
@@ -226,7 +226,7 @@ def wait_for_ffmpeg(timeout_seconds: int = 15):
 
 def clean_old_cache(cache_dir: str, max_size_mb: int = 300):
     """
-    Dọn dẹp cache LRU để tránh đầy phân vùng /tmp (giới hạn 512MB trên Vercel).
+    Clean LRU cache to prevent disk fullness on /tmp partition (512MB limit on Vercel).
     """
     try:
         files = []
@@ -261,8 +261,8 @@ def clean_old_cache(cache_dir: str, max_size_mb: int = 300):
 
 async def _generate_gtts_fallback_internal(text: str, speaker: str, filename: str, file_path: str) -> str:
     """
-    Helper thực hiện gọi gTTS và ghi file âm thanh.
-    Có cơ chế tự động thử lại 3 lần và xác thực tệp vừa lưu.
+    Helper to call gTTS and write the audio file.
+    Includes 3-retries and validation.
     """
     max_retries = 3
     for attempt in range(1, max_retries + 1):
@@ -292,8 +292,8 @@ async def _generate_gtts_fallback_internal(text: str, speaker: str, filename: st
 
 async def _generate_edge_tts_fallback(text: str, speaker: str, filename: str, file_path: str) -> bool:
     """
-    Sinh giọng đọc fallback sử dụng Microsoft Edge TTS.
-    Giọng đọc chất lượng cao giống ElevenLabs, không giới hạn quota và không bị chặn IP trên Vercel.
+    Generate fallback audio using Microsoft Edge TTS.
+    High-quality, free quota, and works on Vercel IPs.
     """
     try:
         import edge_tts
@@ -322,9 +322,7 @@ async def _generate_edge_tts_fallback(text: str, speaker: str, filename: str, fi
 
 async def generate_audio_file_async(text: str, speaker: str, voice_id: str = None, client: httpx.AsyncClient = None) -> str:
     """
-    Tạo hoặc tải file audio đã được cache cho câu thoại (Async version).
-    Trả về tên file audio (ví dụ 'abcd1234efgh.mp3') nằm trong cache.
-    Nếu không cấu hình ELEVENLABS_API_KEY hoặc gọi API lỗi, tự động fallback sang gTTS.
+    Generate or load cached audio file for a speech line (Async version).
     """
     if not voice_id:
         voice_id = get_voice_id(speaker)
