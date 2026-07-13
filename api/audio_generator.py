@@ -17,15 +17,27 @@ _audio_write_lock = asyncio.Lock()
 
 def is_valid_mp3(file_path: str) -> bool:
     """
-    Kiểm tra xem tệp mp3 có tồn tại, có dung lượng hợp lệ (> 100 bytes)
-    và có thể đọc được bằng pydub (không bị hỏng dở dang) hay không.
+    Kiểm tra xem tệp mp3 có tồn tại, có dung lượng hợp lệ (> 1000 bytes)
+    và có cấu trúc header MP3 hợp lệ hay không (không phụ thuộc vào ffmpeg/pydub).
     """
-    if not os.path.exists(file_path) or os.path.getsize(file_path) < 100:
+    if not os.path.exists(file_path):
         return False
     try:
-        # Thử đọc 100ms đầu tiên để kiểm tra tính hợp lệ
-        AudioSegment.from_mp3(file_path)[:100]
-        return True
+        size = os.path.getsize(file_path)
+        if size < 1000:  # File quá nhỏ
+            return False
+            
+        with open(file_path, "rb") as f:
+            header = f.read(4)
+            
+        if len(header) < 4:
+            return False
+            
+        # Kiểm tra ID3 header (b"ID3") hoặc MP3 sync word (0xFF và 3 bit cao của byte tiếp theo là 1)
+        is_id3 = header[:3] == b"ID3"
+        is_sync = header[0] == 0xFF and (header[1] & 0xE0) == 0xE0
+        
+        return is_id3 or is_sync
     except Exception:
         return False
 
