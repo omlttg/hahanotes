@@ -7,6 +7,61 @@ const API_BASE = typeof window !== 'undefined'
      : '')
   : '';
 
+// Hàm MD5 tiêu chuẩn gọn nhẹ để tính toán mã hash chính xác khớp với backend
+function md5(str: string): string {
+  var k = [], i = 0;
+  for (; i < 64; ) k[i] = Math.sin(++i) * 4294967296 | 0;
+  var ascii = function(s: string) {
+    var bytes = [];
+    for (var i = 0; i < s.length; i++) {
+      var code = s.charCodeAt(i);
+      if (code < 128) bytes.push(code);
+      else if (code < 2048) bytes.push(192 | code >> 5, 128 | code & 63);
+      else if ((code & 0xF800) == 0xD800 && i + 1 < s.length && (s.charCodeAt(i + 1) & 0xFC00) == 0xDC00) {
+        code = 0x10000 + ((code & 0x3FF) << 10) + (s.charCodeAt(++i) & 0x3FF);
+        bytes.push(240 | code >> 18, 128 | code >> 12 & 63, 128 | code >> 6 & 63, 128 | code & 63);
+      } else bytes.push(224 | code >> 12, 128 | code >> 6 & 63, 128 | code & 63);
+    }
+    return bytes;
+  };
+  var words: number[] = [];
+  var bytes = ascii(str);
+  for (i = 0; i < bytes.length * 8; i += 8) words[i >> 5] |= bytes[i / 8] << i % 32;
+  var l = bytes.length * 8;
+  words[l >> 5] |= 0x80 << l % 32;
+  words[(((l + 64) >>> 9) << 4) + 14] = l;
+  var h0 = 1732584193, h1 = -271733879, h2 = -1732584194, h3 = 271733878;
+  for (i = 0; i < words.length; i += 16) {
+    var a = h0, b = h1, c = h2, d = h3;
+    for (var j = 0; j < 64; j++) {
+      var f, g;
+      if (j < 16) { f = (b & c) | (~b & d); g = j; }
+      else if (j < 32) { f = (d & b) | (~d & c); g = (5 * j + 1) % 16; }
+      else if (j < 48) { f = b ^ c ^ d; g = (3 * j + 5) % 16; }
+      else { f = c ^ (b | ~d); g = (7 * j) % 16; }
+      var temp = d;
+      d = c;
+      c = b;
+      var s = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21][(j >> 4) * 4 + j % 4];
+      b = (b + rotateLeft(a + f + k[j] + (words[g] || 0), s)) | 0;
+      a = temp;
+    }
+    h0 = (h0 + a) | 0; h1 = (h1 + b) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0;
+  }
+  function rotateLeft(n: number, s: number) {
+    return (n << s) | (n >>> (32 - s));
+  }
+  var hex = function(n: number) {
+    var s = "", v;
+    for (var j = 0; j < 4; j++) {
+      v = (n >>> (j * 8)) & 255;
+      s += (v < 16 ? "0" : "") + v.toString(16);
+    }
+    return s;
+  };
+  return hex(h0) + hex(h1) + hex(h2) + hex(h3);
+}
+
 export const useHahaNote = () => {
   const [script, setScript] = useState<HahaNoteScript | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -141,15 +196,8 @@ export const useHahaNote = () => {
     // Fallback on-demand mapping nếu scene chưa có audioUrl
     if (!sceneAudioUrl) {
       const text = scene.text;
-      let hash = 0;
-      const combinedStr = `${voiceId}:${text}`;
-      for (let i = 0; i < combinedStr.length; i++) {
-        const char = combinedStr.charCodeAt(i);
-        hash = (hash << 5) - hash + char;
-        hash = hash & hash;
-      }
-      const md5_hash = Math.abs(hash).toString(16);
-      sceneAudioUrl = `${API_BASE}/api/audio-stream/${md5_hash}`;
+      const md5_hash = md5(`${voiceId}:${text}`);
+      sceneAudioUrl = `${API_BASE}/api/audio-stream/${md5_hash}?text=${encodeURIComponent(text)}&speaker=${scene.speaker}&voice_id=${voiceId}`;
     }
 
     if (sceneAudioUrl) {

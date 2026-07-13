@@ -22,8 +22,6 @@ except ImportError:
 # Load environment variables (.env file)
 load_dotenv()
 
-
-
 def parse_chat_reply(reply: str) -> list[dict]:
     """
     Phân tích chuỗi phản hồi chat chứa [rookie] và [cynic] thành danh sách các câu thoại có sender và text.
@@ -150,13 +148,30 @@ def get_scenes_by_conversation_id(conversation_id: str) -> dict:
         print(f"! [DB Error] Lỗi đọc scenes bằng conversation_id: {e}")
     return None
 
+def update_cached_script_by_conversation_id(conversation_id: str, scenes: list):
+    """
+    Cập nhật danh sách scenes mới (gồm cả chat) vào DB cache để đảm bảo đồng bộ khi tạo podcast.
+    """
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "UPDATE prompt_cache SET scenes = ? WHERE conversation_id = ?",
+                (json.dumps(scenes), conversation_id)
+            )
+            conn.commit()
+            print(f"✓ [DB Sync] Cập nhật scenes thành công cho conversation_id: {conversation_id}")
+    except Exception as e:
+        print(f"! [DB Error] Lỗi cập nhật scenes bằng conversation_id: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Khởi tạo httpx.AsyncClient dùng chung cho toàn bộ app lifespan
     app.state.http_client = httpx.AsyncClient()
     try:
-        init_db()
         import asyncio
+        # Khởi tạo DB bất đồng bộ tránh block thread chính
+        await asyncio.to_thread(init_db)
+        
         # Chạy ensure_ffmpeg bất đồng bộ trên một thread khác để tránh làm nghẽn khởi chạy (cold start) trên Vercel
         asyncio.create_task(asyncio.to_thread(ensure_ffmpeg))
         
@@ -206,6 +221,13 @@ class ChatRequest(BaseModel):
     rookieVoice: str = None
     cynicVoice: str = None
     history: list[dict] = None  # Gửi kèm lịch sử chat từ Frontend để giữ ngữ cảnh fallback
+
+# CORS Headers mặc định cho tệp âm thanh (Audio CORS)
+AUDIO_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "*"
+}
 
 @app.get("/api/health")
 def health_check():
@@ -328,6 +350,20 @@ async def api_chat(payload: ChatRequest):
             quoted_text = urllib.parse.quote(text)
             item["audioUrl"] = f"/api/audio-stream/{md5_hash}?text={quoted_text}&speaker={speaker}&voice_id={voice_id}"
             
+        # Đồng bộ và cập nhật kịch bản đầy đủ vào SQLite prompt_cache
+        old_data = get_scenes_by_conversation_id(payload.conversation_id)
+        if old_data:
+            scenes = old_data["scenes"]
+            for item in chat_replies:
+                guessed_meme = "burn" if "không" in item["text"].lower() or "sập" in item["text"].lower() else "fine_dog"
+                scenes.append({
+                    "speaker": item["sender"],
+                    "text": item["text"],
+                    "memeId": guessed_meme,
+                    "audioUrl": item["audioUrl"]
+                })
+            update_cached_script_by_conversation_id(payload.conversation_id, scenes)
+            
         return {
             "success": True,
             "reply": reply,
@@ -352,8 +388,8 @@ async def api_audio_stream(
     file_path = os.path.join(cache_dir, f"{md5_hash}.mp3")
     
     # 1. Kiểm tra file mp3 trong thư mục cache
-    if os.path.exists(file_path):
-        return FileResponse(file_path, media_type="audio/mpeg")
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        return FileResponse(file_path, media_type="audio/mpeg", headers=AUDIO_CORS_HEADERS)
         
     # 2. Nếu có các query parameters đầy đủ, tiến hành sinh trực tiếp (không phụ thuộc DB)
     if text and speaker:
@@ -361,8 +397,8 @@ async def api_audio_stream(
             voice_id = get_voice_id(speaker)
         client = request.app.state.http_client
         filename = await generate_audio_file_async(text, speaker, voice_id, client=client)
-        if filename and os.path.exists(file_path):
-            return FileResponse(file_path, media_type="audio/mpeg")
+        if filename and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            return FileResponse(file_path, media_type="audio/mpeg", headers=AUDIO_CORS_HEADERS)
             
     # 3. Tìm trong SQLite DB xem MD5 này có hợp lệ không (dành cho các phiên bản cũ/fallback)
     mapping = get_audio_mapping(md5_hash)
@@ -370,8 +406,8 @@ async def api_audio_stream(
         text_db, speaker_db, voice_id_db = mapping
         client = request.app.state.http_client
         filename = await generate_audio_file_async(text_db, speaker_db, voice_id_db, client=client)
-        if filename and os.path.exists(file_path):
-            return FileResponse(file_path, media_type="audio/mpeg")
+        if filename and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+            return FileResponse(file_path, media_type="audio/mpeg", headers=AUDIO_CORS_HEADERS)
         
     # Nếu ElevenLabs lỗi hoặc chưa cấu hình API Key, trả về 404
     raise HTTPException(status_code=404, detail="Audio file could not be generated.")
@@ -448,7 +484,7 @@ async def api_get_podcast(
         # Lưu mapping nếu chưa có để stream on-demand hoạt động
         save_audio_mapping(md5_hash, text, speaker, voice_id)
         
-        if not os.path.exists(file_path):
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
             print(f"[Podcast Build] Sinh giọng đọc ElevenLabs thiếu cho: {text[:20]}...")
             await generate_audio_file_async(text, speaker, voice_id, client=client)
             
@@ -469,7 +505,7 @@ async def api_get_podcast(
     podcast_path = os.path.join(cache_dir, podcast_filename)
     
     if podcast_filename and os.path.exists(podcast_path) and os.path.getsize(podcast_path) > 0:
-        return FileResponse(podcast_path, media_type="audio/mpeg", filename=f"podcast_{conversation_id}.mp3")
+        return FileResponse(podcast_path, media_type="audio/mpeg", filename=f"podcast_{conversation_id}.mp3", headers=AUDIO_CORS_HEADERS)
         
     if os.path.exists(podcast_path):
         try:

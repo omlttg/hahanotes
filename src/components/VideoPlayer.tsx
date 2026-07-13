@@ -33,6 +33,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const audioCtxRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
   const destNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+
+  // Tự động dọn dẹp và đóng AudioContext cũ khi đổi podcastUrl hoặc khi component unmount
+  useEffect(() => {
+    return () => {
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close().catch((e) => console.error("Error closing AudioContext:", e));
+        audioCtxRef.current = null;
+        sourceNodeRef.current = null;
+        destNodeRef.current = null;
+        gainNodeRef.current = null;
+        console.log("✓ [VideoPlayer] Cleaned up AudioContext.");
+      }
+    };
+  }, [podcastUrl]);
 
   // Lưu danh sách mốc thời gian của các scene
   const sceneTimingsRef = useRef<{ start: number; end: number; duration: number }[]>([]);
@@ -115,7 +130,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       
       // Tìm scene hiện tại dựa vào currentTime
       let activeIdx = 0;
-      let timing = sceneTimingsRef.current[0];
+      let timing = sceneTimingsRef.current[0] || { start: 0, end: 3, duration: 3 };
       for (let i = 0; i < sceneTimingsRef.current.length; i++) {
         if (currentTime >= sceneTimingsRef.current[i].start && currentTime <= sceneTimingsRef.current[i].end) {
           activeIdx = i;
@@ -132,24 +147,49 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       const isRookieTalking = activeScene.speaker === 'rookie' && currentTime >= timing.start && currentTime <= timing.end;
       const isCynicTalking = activeScene.speaker === 'cynic' && currentTime >= timing.start && currentTime <= timing.end;
 
-      // 1. Vẽ Background Gradient động
-      gradientOffset += 0.002;
-      const grad = ctx.createRadialGradient(
-        canvas.width / 2 + Math.sin(gradientOffset) * 100,
-        canvas.height / 2 + Math.cos(gradientOffset * 1.5) * 150,
-        50,
+      // 1. Vẽ Background Split-Screen
+      gradientOffset += 0.003;
+      
+      // Nửa trên (Rookie)
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, canvas.width, 320);
+      ctx.clip();
+      const gradTop = ctx.createRadialGradient(
+        canvas.width / 2 + Math.sin(gradientOffset) * 40,
+        140 + Math.cos(gradientOffset * 1.5) * 40,
+        10,
         canvas.width / 2,
-        canvas.height / 2,
-        canvas.width
+        140,
+        320
       );
-      grad.addColorStop(0, '#1e1b4b'); // deep indigo
-      grad.addColorStop(0.5, '#0f172a'); // slate
-      grad.addColorStop(1, '#020617'); // black slate
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      gradTop.addColorStop(0, '#13113c'); // deep warm indigo
+      gradTop.addColorStop(1, '#020617'); // black slate
+      ctx.fillStyle = gradTop;
+      ctx.fill();
+      ctx.restore();
 
-      // Vẽ lưới neon trang trí nhẹ
-      ctx.strokeStyle = 'rgba(99, 102, 241, 0.06)';
+      // Nửa dưới (Cynic)
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 320, canvas.width, 320);
+      ctx.clip();
+      const gradBottom = ctx.createRadialGradient(
+        canvas.width / 2 + Math.sin(gradientOffset) * 40,
+        500 + Math.cos(gradientOffset * 1.5) * 40,
+        10,
+        canvas.width / 2,
+        500,
+        320
+      );
+      gradBottom.addColorStop(0, '#24140b'); // deep amber
+      gradBottom.addColorStop(1, '#020617'); // black slate
+      ctx.fillStyle = gradBottom;
+      ctx.fill();
+      ctx.restore();
+
+      // Vẽ lưới trang trí nhẹ
+      ctx.strokeStyle = 'rgba(99, 102, 241, 0.04)';
       ctx.lineWidth = 1;
       const gridSize = 40;
       for (let x = 0; x < canvas.width; x += gridSize) {
@@ -165,30 +205,52 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         ctx.stroke();
       }
 
-      // 2. Vẽ tiêu đề Podcast phía trên
+      // 2. Vẽ dải phân cách và sóng âm Spectrum động ở giữa
+      const waveY = 320;
+      const isHostTalking = isRookieTalking || isCynicTalking;
+      const maxAmp = isHostTalking ? 45 : 3;
+      const barCount = 36;
+      const barWidth = 5;
+      const gap = 4;
+      const totalWidth = barCount * (barWidth + gap) - gap;
+      const startX = (canvas.width - totalWidth) / 2;
+
       ctx.save();
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-      ctx.font = 'bold 22px "Outfit", "Inter", sans-serif';
-      ctx.textAlign = 'center';
-      ctx.shadowColor = 'rgba(0,0,0,0.5)';
-      ctx.shadowBlur = 4;
-      ctx.fillText('HahaNotes Podcast', canvas.width / 2, 45);
+      for (let i = 0; i < barCount; i++) {
+        const timeFactor = Date.now() * 0.015;
+        const sineValue = Math.sin(timeFactor + i * 0.4) * Math.cos(timeFactor * 0.5 + i * 0.1);
+        const amp = maxAmp * (0.2 + 0.8 * Math.abs(sineValue));
+        const x = startX + i * (barWidth + gap);
+        
+        const barGrad = ctx.createLinearGradient(x, waveY - amp, x, waveY + amp);
+        barGrad.addColorStop(0, '#2dd4bf'); // teal
+        barGrad.addColorStop(0.5, 'rgba(168, 85, 247, 0.8)'); // purple
+        barGrad.addColorStop(1, '#fb923c'); // orange
+
+        ctx.fillStyle = barGrad;
+        ctx.beginPath();
+        ctx.roundRect(x, waveY - amp, barWidth, amp * 2, 2.5);
+        ctx.fill();
+      }
       
-      ctx.fillStyle = '#38bdf8'; // sky blue
-      ctx.font = '13px "Outfit", "Inter", sans-serif';
-      ctx.fillText(script.title.toUpperCase(), canvas.width / 2, 65);
+      // Đường line giữa
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, waveY);
+      ctx.lineTo(canvas.width, waveY);
+      ctx.stroke();
       ctx.restore();
 
-      // 3. Vẽ Rookie (Phía trên) - Dịch lên trên nhường chỗ cho trung tâm
-      const rookieY = canvas.height * 0.18;
-      const rookieRadius = 55;
-      const rookieScale = isRookieTalking ? 1.08 + Math.sin(Date.now() * 0.015) * 0.02 : 1.0;
+      // 3. Vẽ Rookie (Phía trên)
+      const rookieY = 140;
+      const rookieRadius = 60;
+      const rookieScale = isRookieTalking ? 1.05 + Math.sin(Date.now() * 0.015) * 0.02 : 1.0;
       
       ctx.save();
-      // Vẽ bóng sáng xung quanh khi nói
       if (isRookieTalking) {
         ctx.shadowColor = '#2dd4bf'; // teal glow
-        ctx.shadowBlur = 20;
+        ctx.shadowBlur = 18;
         ctx.strokeStyle = '#2dd4bf';
         ctx.lineWidth = 4;
       } else {
@@ -200,7 +262,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       ctx.stroke();
       ctx.clip();
       
-      // Vẽ ảnh Rookie
       try {
         ctx.drawImage(
           imgRookie, 
@@ -210,29 +271,28 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           rookieRadius * 2 * rookieScale
         );
       } catch (e) {
-        // Fallback màu nếu ảnh lỗi
         ctx.fillStyle = '#0d9488';
         ctx.fillRect(canvas.width / 2 - rookieRadius, rookieY - rookieRadius, rookieRadius * 2, rookieRadius * 2);
       }
       ctx.restore();
 
-      // Nhãn Rookie
+      // Nhãn Rookie ở trên cùng
       ctx.save();
-      ctx.fillStyle = isRookieTalking ? '#2dd4bf' : 'rgba(255, 255, 255, 0.4)';
-      ctx.font = 'bold 12px "Outfit", "Inter", sans-serif';
+      ctx.fillStyle = isRookieTalking ? '#2dd4bf' : 'rgba(255, 255, 255, 0.5)';
+      ctx.font = 'bold 11px "Inter", sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('ROOKIE (The Optimist)', canvas.width / 2, rookieY + rookieRadius + 18);
+      ctx.fillText('ROOKIE', canvas.width / 2, rookieY - rookieRadius - 12);
       ctx.restore();
 
-      // 4. Vẽ Cynic (Phía dưới) - Dịch xuống dưới nhường chỗ cho trung tâm
-      const cynicY = canvas.height * 0.82;
-      const cynicRadius = 55;
-      const cynicScale = isCynicTalking ? 1.08 + Math.sin(Date.now() * 0.015) * 0.02 : 1.0;
+      // 4. Vẽ Cynic (Phía dưới)
+      const cynicY = 500;
+      const cynicRadius = 60;
+      const cynicScale = isCynicTalking ? 1.05 + Math.sin(Date.now() * 0.015) * 0.02 : 1.0;
       
       ctx.save();
       if (isCynicTalking) {
         ctx.shadowColor = '#fb923c'; // orange glow
-        ctx.shadowBlur = 20;
+        ctx.shadowBlur = 18;
         ctx.strokeStyle = '#fb923c';
         ctx.lineWidth = 4;
       } else {
@@ -244,7 +304,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       ctx.stroke();
       ctx.clip();
       
-      // Vẽ ảnh Cynic
       try {
         ctx.drawImage(
           imgCynic, 
@@ -259,148 +318,154 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       }
       ctx.restore();
 
-      // Nhãn Cynic
+      // Nhãn Cynic ở dưới cùng
       ctx.save();
-      ctx.fillStyle = isCynicTalking ? '#fb923c' : 'rgba(255, 255, 255, 0.4)';
-      ctx.font = 'bold 12px "Outfit", "Inter", sans-serif';
+      ctx.fillStyle = isCynicTalking ? '#fb923c' : 'rgba(255, 255, 255, 0.5)';
+      ctx.font = 'bold 11px "Inter", sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('CYNIC (The Realist)', canvas.width / 2, cynicY + cynicRadius + 18);
+      ctx.fillText('CYNIC', canvas.width / 2, cynicY + cynicRadius + 22);
       ctx.restore();
 
-      // 4.5. Vẽ Meme hoạt họa minh họa ở trung tâm (Hài hước hóa)
-      const activeMemeId = activeScene.memeId;
-      const memeImg = memeImages[activeMemeId];
-      if (memeImg && memeImg.complete) {
-        ctx.save();
-        const memeCenterY = canvas.height * 0.43;
-        // Rung nhẹ theo giọng nói để thêm tính động
-        const speakFactor = (isRookieTalking || isCynicTalking) ? Math.sin(Date.now() * 0.015) * 0.03 : 0;
-        const scale = 1.0 + speakFactor;
-        ctx.translate(canvas.width / 2, memeCenterY);
-        ctx.scale(scale, scale);
-
-        // Viền rực rỡ neon xung quanh meme
-        ctx.shadowColor = activeScene.speaker === 'rookie' ? '#2dd4bf' : '#fb923c';
-        ctx.shadowBlur = 15;
-        ctx.fillStyle = '#1e1b4b'; // deep indigo fill
-        ctx.strokeStyle = activeScene.speaker === 'rookie' ? '#2dd4bf' : '#fb923c';
-        ctx.lineWidth = 3;
-
-        // Khung ảnh Polaroid hài hước
-        const frameW = 200;
-        const frameH = 135;
-        ctx.beginPath();
-        ctx.roundRect(-frameW / 2, -frameH / 2, frameW, frameH, 10);
-        ctx.fill();
-        ctx.stroke();
-
-        // Clip vẽ ảnh meme bên trong khung
-        ctx.save();
-        ctx.beginPath();
-        ctx.roundRect(-frameW / 2 + 6, -frameH / 2 + 6, frameW - 12, frameH - 32, 6);
-        ctx.clip();
-        try {
-          ctx.drawImage(memeImg, -frameW / 2 + 6, -frameH / 2 + 6, frameW - 12, frameH - 32);
-        } catch (e) {
-          // ignore
-        }
-        ctx.restore();
-
-        // Tên meme ở đáy khung polaroid
-        ctx.fillStyle = '#e2e8f0';
-        ctx.font = '800 10px "Inter", sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(activeMemeId.toUpperCase() + ' MODE', 0, frameH / 2 - 8);
-        ctx.restore();
-      }
-
-      // 5. Vẽ Phụ đề Karaoke (Đưa xuống Y = canvas.height * 0.63 để không đè lên meme)
+      // 5. Phụ đề Karaoke Pop in hoa dạng ngắn gọn (Y = 375, dưới dải sóng âm Y = 320)
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       
-      const words = activeScene.text.split(/\s+/);
+      const upperText = activeScene.text.toUpperCase();
+      const words = upperText.split(/\s+/);
       const textProgress = (currentTime - timing.start) / timing.duration;
       const clampedProgress = Math.min(Math.max(0, textProgress), 1);
       
-      // Tính toán từ đang nói hoạt họa Karaoke
+      // Vị trí từ đang nói hiện tại trong toàn bộ câu
       const wordProgressLimit = Math.floor(words.length * clampedProgress);
       setActiveWordIndex(wordProgressLimit);
       
-      // Vẽ phụ đề gói dòng thông minh (Smart Wrap)
-      const centerY = canvas.height * 0.63;
-      ctx.font = 'bold 16px "Inter", sans-serif';
+      // Chia mảng words thành các chunk con tối đa 4 từ
+      const WORDS_PER_CHUNK = 4;
+      const currentChunkIdx = Math.floor(wordProgressLimit / WORDS_PER_CHUNK);
       
-      const wrapText = (text: string, maxWidth: number) => {
-        const wordsArr = text.split(' ');
-        const linesArr = [];
-        let currentLine = '';
+      // Nhóm từ cần vẽ hiện tại
+      const startIndex = currentChunkIdx * WORDS_PER_CHUNK;
+      const chunkWords = words.slice(startIndex, startIndex + WORDS_PER_CHUNK);
+      
+      const centerY = 375; // Đặt dưới dải sóng âm Y = 320, trên đầu Cynic
+      
+      // Tính toán độ rộng của toàn bộ nhóm từ này để căn lề giữa chính xác
+      let subTotalWidth = 0;
+      const wordWidths: number[] = [];
+      
+      chunkWords.forEach((word, index) => {
+        const globalIdx = startIndex + index;
+        const isActive = globalIdx === wordProgressLimit;
         
-        for (let n = 0; n < wordsArr.length; n++) {
-          const testLine = currentLine + wordsArr[n] + ' ';
-          const metrics = ctx.measureText(testLine);
-          if (metrics.width > maxWidth && n > 0) {
-            linesArr.push(currentLine.trim());
-            currentLine = wordsArr[n] + ' ';
-          } else {
-            currentLine = testLine;
-          }
-        }
-        linesArr.push(currentLine.trim());
-        return linesArr;
-      };
-
-      const maxTextWidth = canvas.width - 60;
-      const subtitleLines = wrapText(activeScene.text, maxTextWidth);
-      
-      // Vẽ nền đen mờ sau sub
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
-      ctx.beginPath();
-      ctx.roundRect(
-        20, 
-        centerY - (subtitleLines.length * 22) / 2 - 10, 
-        canvas.width - 40, 
-        subtitleLines.length * 24 + 16, 
-        10
-      );
-      ctx.fill();
-      
-      // Vẽ chữ phụ đề
-      let globalWordCounter = 0;
-      
-      subtitleLines.forEach((lineText, lineIdx) => {
-        const lineY = centerY - ((subtitleLines.length - 1) * 24) / 2 + lineIdx * 24;
-        const lineWords = lineText.split(' ');
-        
-        // Vẽ Karaoke từng từ
-        const lineTotalWidth = ctx.measureText(lineText).width;
-        let startX = (canvas.width - lineTotalWidth) / 2;
-        
-        lineWords.forEach((word) => {
-          const wordWidth = ctx.measureText(word + ' ').width;
+        // Đo chiều rộng từ (từ active zoom to 20%)
+        ctx.font = isActive 
+          ? 'bold 24px "Impact", "Inter", sans-serif'
+          : 'bold 20px "Impact", "Inter", sans-serif';
           
-          ctx.save();
-          ctx.shadowColor = 'black';
-          ctx.shadowBlur = 2;
-          
-          // Xác định màu chữ phụ đề Karaoke
-          if (globalWordCounter < wordProgressLimit) {
-            ctx.fillStyle = activeScene.speaker === 'rookie' ? '#2dd4bf' : '#fb923c';
-            ctx.font = 'bold 17px "Inter", sans-serif';
-          } else {
-            ctx.fillStyle = '#f8fafc';
-            ctx.font = 'bold 16px "Inter", sans-serif';
-          }
-          
-          ctx.fillText(word, startX + ctx.measureText(word).width / 2, lineY);
-          ctx.restore();
-          
-          startX += wordWidth;
-          globalWordCounter++;
-        });
+        const w = ctx.measureText(word + ' ').width;
+        wordWidths.push(w);
+        subTotalWidth += w;
       });
-
+      
+      let subStartX = (canvas.width - subTotalWidth) / 2;
+      
+      // Vẽ từng từ trong nhóm trực tiếp lên Canvas với viền đen dày
+      chunkWords.forEach((word, index) => {
+        const globalIdx = startIndex + index;
+        const isActive = globalIdx === wordProgressLimit;
+        const isPassed = globalIdx < wordProgressLimit;
+        
+        ctx.save();
+        ctx.font = isActive 
+          ? 'bold 24px "Impact", "Inter", sans-serif'
+          : 'bold 20px "Impact", "Inter", sans-serif';
+        
+        // Vẽ viền đen dày nổi bật
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 5;
+        ctx.lineJoin = 'round';
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.shadowBlur = 4;
+        
+        const wordX = subStartX + wordWidths[index] / 2;
+        ctx.strokeText(word, wordX, centerY);
+        
+        // Chọn màu sắc fill cho chữ
+        if (isActive) {
+          ctx.fillStyle = '#facc15'; // yellow neon
+        } else if (isPassed) {
+          ctx.fillStyle = activeScene.speaker === 'rookie' ? '#2dd4bf' : '#fb923c'; // highlight màu theo host
+        } else {
+          ctx.fillStyle = '#ffffff'; // màu trắng mặc định
+        }
+        
+        ctx.fillText(word, wordX, centerY);
+        ctx.restore();
+        
+        subStartX += wordWidths[index];
+      });
       ctx.restore();
+
+      // 6. Meme Pop-up & Fade-out ở trung tâm
+      const sceneElapsed = currentTime - timing.start;
+      if (sceneElapsed >= 0 && sceneElapsed <= 1.5) {
+        const activeMemeId = activeScene.memeId;
+        const memeImg = memeImages[activeMemeId];
+        if (memeImg && memeImg.complete) {
+          ctx.save();
+          
+          let memeScale = 1.0;
+          let memeOpacity = 1.0;
+          let translateY = 0;
+          
+          if (sceneElapsed < 0.25) {
+            const progress = sceneElapsed / 0.25;
+            memeScale = progress * 0.8 + 0.2;
+            memeOpacity = progress;
+            translateY = (1.0 - progress) * 25;
+          } else if (sceneElapsed > 1.2) {
+            const progress = (sceneElapsed - 1.2) / 0.3;
+            memeOpacity = 1.0 - progress;
+            translateY = progress * 25;
+          }
+          
+          const speakFactor = (isRookieTalking || isCynicTalking) ? Math.sin(Date.now() * 0.015) * 0.02 : 0;
+          ctx.globalAlpha = memeOpacity;
+          ctx.translate(canvas.width / 2, 320 + translateY);
+          ctx.scale(memeScale + speakFactor, memeScale + speakFactor);
+
+          // Khung Polaroid viền Neon
+          ctx.shadowColor = activeScene.speaker === 'rookie' ? '#2dd4bf' : '#fb923c';
+          ctx.shadowBlur = 20;
+          ctx.fillStyle = '#0f172a';
+          ctx.strokeStyle = activeScene.speaker === 'rookie' ? '#2dd4bf' : '#fb923c';
+          ctx.lineWidth = 3;
+
+          const frameW = 190;
+          const frameH = 135;
+          ctx.beginPath();
+          ctx.roundRect(-frameW / 2, -frameH / 2, frameW, frameH, 10);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.roundRect(-frameW / 2 + 6, -frameH / 2 + 6, frameW - 12, frameH - 32, 6);
+          ctx.clip();
+          try {
+            ctx.drawImage(memeImg, -frameW / 2 + 6, -frameH / 2 + 6, frameW - 12, frameH - 32);
+          } catch (e) {}
+          ctx.restore();
+
+          ctx.fillStyle = '#94a3b8';
+          ctx.font = 'bold 9px "Inter", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.shadowBlur = 0;
+          ctx.fillText(activeMemeId.toUpperCase() + ' MODE', 0, frameH / 2 - 7);
+          ctx.restore();
+        }
+      }
 
       animationFrameRef.current = requestAnimationFrame(render);
     };
@@ -459,11 +524,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     setExportProgress(0);
     recordedChunksRef.current = [];
 
-    // Tắt tiếng phát loa ngoài của audio chính khi record để ko ồn
-    audio.muted = true;
+    // Đưa thời gian phát về đầu
     audio.currentTime = 0;
 
-    // Khởi tạo AudioContext và các Node một lần duy nhất để tránh lỗi InvalidStateError
+    // Khởi tạo AudioContext và các Node một lần duy nhất nếu chưa có
     if (!audioCtxRef.current) {
       try {
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -476,8 +540,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         const destNode = audioCtx.createMediaStreamDestination();
         destNodeRef.current = destNode;
         
+        const gainNode = audioCtx.createGain();
+        gainNodeRef.current = gainNode;
+        
+        // Kết nối để thu âm vào MediaRecorder
         sourceNode.connect(destNode);
-        sourceNode.connect(audioCtx.destination);
+        
+        // Kết nối để nghe loa ngoài (thông qua gainNode kiểm soát)
+        sourceNode.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
       } catch (err) {
         console.error("AudioContext setup failed:", err);
       }
@@ -485,6 +556,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     const audioCtx = audioCtxRef.current;
     const destNode = destNodeRef.current;
+
+    // Tắt âm thanh phát ra loa ngoài qua GainNode để tránh tiếng ồn khi đang xuất video
+    if (gainNodeRef.current) {
+      gainNodeRef.current.gain.value = 0.0;
+    }
 
     if (audioCtx && audioCtx.state === 'suspended') {
       try {
@@ -499,8 +575,22 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     
     // Nếu setup AudioContext thành công thì gộp stream
     const tracks = [...videoStream.getVideoTracks()];
-    if (destNode) {
+    if (destNode && destNode.stream.getAudioTracks().length > 0) {
       tracks.push(...destNode.stream.getAudioTracks());
+    } else if (audioCtx) {
+      // Fallback: Tạo một silent audio track nhân tạo nếu không tìm thấy track âm thanh
+      console.warn("⚠️ [VideoPlayer] No active audio tracks found in destination node, creating synthetic silent track.");
+      try {
+        const osc = audioCtx.createOscillator();
+        const silentDest = audioCtx.createMediaStreamDestination();
+        osc.connect(silentDest);
+        const silentTrack = silentDest.stream.getAudioTracks()[0];
+        if (silentTrack) {
+          tracks.push(silentTrack);
+        }
+      } catch (err) {
+        console.error("Failed to create synthetic silent audio track:", err);
+      }
     }
 
     const combinedStream = new MediaStream(tracks);
@@ -525,7 +615,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
     recorder.onstop = () => {
       const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
-      audio.muted = false; // bật lại tiếng loa
+      // Bật lại loa ngoài khi hoàn tất
+      if (gainNodeRef.current) {
+        gainNodeRef.current.gain.value = 1.0;
+      }
       if (onExportComplete) {
         onExportComplete(blob);
       }
